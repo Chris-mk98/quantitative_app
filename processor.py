@@ -2,6 +2,7 @@ import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
+import os
 
 # --- 상수 및 기본 설정 ---
 BASE_ORDERED_COLUMNS_PREFIX = [
@@ -443,7 +444,7 @@ class CriteriaFormulaGenerator:
         return formula
 
 class Analysis:
-    def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path="", criteria_list=None):
+    def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path="", criteria_list=None, output_path=None):
         self.wb = Workbook()
         self.ws = self.wb.active
         self.tested_party = tested_party
@@ -453,6 +454,7 @@ class Analysis:
         self.number_of_criteria = number_of_criteria
         self.data_path = data_path
         self.criteria_list = criteria_list if criteria_list else []
+        self.output_path = output_path
         self.color_code = COLOR_CODES
         
         self.num_years = self.end_year - self.start_year + 1
@@ -533,11 +535,53 @@ class Analysis:
         self.ws['A1'] = f"분석대상법인: {self.tested_party}"
         self.ws['A2'] = f"분석대상연도: FY{self.start_year}-{self.end_year}"
         self.ws['A3'] = f"{self.name}"
+        
+        # A1, A2, A3 Bold & Size 20
+        big_bold_font = Font(size=20, bold=True)
+        self.ws['A1'].font = big_bold_font
+        self.ws['A2'].font = big_bold_font
+        self.ws['A3'].font = big_bold_font
 
     def _set_quantitative_criteria_table(self):
         self.ws['A5'] = "양적기준"
         for i in range(self.number_of_criteria):
-            self.ws.cell(row=6 + i, column=1).value = i + 1
+            # A열: 순번 (Bold)
+            cell_a = self.ws.cell(row=6 + i, column=1)
+            cell_a.value = i + 1
+            cell_a.font = BOLD_FONT
+            cell_a.border = THIN_BORDER
+            
+            # B열: 설명 (Merge B:H, Left Align, Wrap Text)
+            description = ""
+            if i < len(self.criteria_list):
+                c = self.criteria_list[i]
+                account = c.get('account', '')
+                x_val = c.get('xValue', '')
+                x_comp = c.get('xCompare', '')
+                include = c.get('include') # True/False
+                
+                inc_str = "포함" if include else "제외"
+                
+                if x_comp == "존재함":
+                    description = f"{account} 데이터가 존재하는 경우 {inc_str}"
+                elif x_comp == "텍스트 일치":
+                    description = f"{account}이(가) '{x_val}'인 경우 {inc_str}"
+                elif x_comp == "All equals":
+                    description = f"{account}이(가) 모든 연도에서 '{x_val}'인 경우 {inc_str}"
+                else:
+                    description = f"{account} {x_val} {x_comp}인 경우 {inc_str}"
+            
+            cell_b = self.ws.cell(row=6 + i, column=2)
+            cell_b.value = description
+            cell_b.alignment = Alignment(horizontal='left', vertical='center', wrap_text=True)
+            cell_b.border = THIN_BORDER
+            
+            # Merge B:H
+            self.ws.merge_cells(start_row=6 + i, end_row=6 + i, start_column=2, end_column=8)
+            
+            # Apply border to merged cells (visual border)
+            for col in range(2, 9):
+                self.ws.cell(row=6 + i, column=col).border = THIN_BORDER
 
         q_cond_row = self.quantitative_start_row
         q_cond_col = self.quantitative_start_col
@@ -1072,7 +1116,12 @@ class Analysis:
             return
         
         # 각 기준에 대해 수식 생성 및 적용
+        # 각 기준에 대해 수식 생성 및 적용
         for criteria_idx, config in enumerate(criteria_configs):
+            if config is None:
+                continue
+
+            criteria_col = self.quantitative_start_col + criteria_idx
             criteria_col = self.quantitative_start_col + criteria_idx
             
             # 각 데이터 행에 수식 적용
@@ -1192,9 +1241,18 @@ class Analysis:
         # 3. WA3 Ratios (Percentage)
         wa3_ratios_count = len(self._get_ratio_tab_list())
         ratio_start_col = self.wa3_start_col + wa3_metrics_count
-        for col in range(ratio_start_col, ratio_start_col + wa3_ratios_count):
+        ratio_list = self._get_ratio_tab_list()
+        
+        for idx, ratio_name in enumerate(ratio_list):
+            col = ratio_start_col + idx
+            # "재고자산보유일수"가 포함된 경우 Accounting Format 적용
+            if "재고자산보유일수" in ratio_name:
+                fmt = ACCOUNTING_FORMAT
+            else:
+                fmt = PERCENTAGE_FORMAT
+                
             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = PERCENTAGE_FORMAT
+                self.ws.cell(row=row, column=col).number_format = fmt
                 
         # 4. Raw Data (Accounting from Turnover)
         # Turnover 컬럼 인덱스 찾기
@@ -1243,9 +1301,78 @@ class Analysis:
             for col in range(1, final_max_col + 1):
                 cell = self.ws.cell(row=row, column=col)
                 cell.border = THIN_BORDER
+        
+        # 7. Wrap Text (Row 26, 27, 28 approx -> quantitative_start_row ~ +2)
+        # qualitative_start_row가 헤더 시작점임
+        header_start_row = self.qualitative_start_row
+        for r in range(header_start_row, header_start_row + 3):
+            for c in range(1, final_max_col + 1):
+                self.ws.cell(row=r, column=c).alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
+
+        # 8. Autofit (Unadjusted ~ End)
+        # self.unadjusted_start_col 부터 final_max_col까지
+        for col_idx in range(self.unadjusted_start_col, final_max_col + 1):
+            col_letter = get_column_letter(col_idx)
+            max_len = 0
+            
+            # 헤더 확인
+            for r in range(header_start_row, header_start_row + 3):
+                val = self.ws.cell(row=r, column=col_idx).value
+                if val:
+                    # 줄바꿈이 있으면 가장 긴 줄 기준
+                    lines = str(val).split('\n')
+                    for line in lines:
+                        max_len = max(max_len, len(str(line)))
+            
+            # 데이터 확인 (너무 많으면 샘플링 or 전체)
+            # 여기선 전체 확인하되 50글자 제한
+            # 엑셀 폭 계산은 대략 글자수 * 1.2 정도?
+            # 숫자는 길이가 짧아도 너비가 필요할 수 있음
+             
+            # 이번 요청에서는 "컬럼너비를 Autofit"이라고 했으므로
+            # openpyxl로 best effort 추정
+            
+            # 데이터는 제외하고 헤더 기준으로만 하거나, 데이터도 일부 포함
+            # Accounting format 등은 길이가 길어질 수 있음
+            # 간단히 헤더 길이 + 여유분 or 데이터 길이 고려
+            
+            # (데이터 전체 순회는 느릴 수 있으니 상위 100개만 체크)
+            check_limit = min(max_row, data_start_row + 100)
+            for r in range(data_start_row, check_limit):
+                val = self.ws.cell(row=r, column=col_idx).value
+                if val is not None:
+                    # 수식이면 결과값을 알기 어려우므로 pass하거나 추정
+                    # 여기서는 그냥 pass (값 읽기가 어려움)
+                    pass
+
+            # 단순히 max_len (헤더 기준) + 여유분 2
+            # 하지만 Wrapping이 되어있으므로 너비를 너무 넓히면 Wrapping의 의미가 퇴색됨
+            # 보통 Wrapping을 하면 너비를 고정하고 높이를 늘리지만,
+            # 여기서는 "Autofit"을 요청했으므로, 텍스트가 안 잘리게 너비를 늘려달라는 의미일 수 있음.
+            # 하지만 Wrap text + Autofit은 상충됨 (Autofit하면 한 줄이 됨).
+            # "Wrap text 옵션 적용 후 ... Autofit" -> Wrap을 유지하면서 적절한 너비?
+            # 아마도 '적당한 너비'를 원할 것 같음. 
+            # 일단 헤더의 max line length + 4 정도로 설정
+            
+            format_width = max_len + 4
+            if format_width < 10: format_width = 10
+            if format_width > 50: format_width = 50 # 너무 넓지 않게
+            
+            self.ws.column_dimensions[col_letter].width = format_width
 
     def save_file(self):
-        self.wb.save(f"{self.name}.xlsx")
+        filename = f"{self.name}.xlsx"
+        if self.output_path:
+            # 경로가 유효한지 확인하고 없으면 생성 등은 하지 않음 (UI에서 선택하므로)
+            filepath = os.path.join(self.output_path, filename)
+        else:
+            filepath = filename
+            
+        try:
+            self.wb.save(filepath)
+            print(f"파일 저장 완료: {filepath}")
+        except Exception as e:
+            print(f"파일 저장 실패: {e}")
 
 
 
@@ -1565,7 +1692,8 @@ def main_processor(payload):
         end_year=input_data["yearTo"],
         number_of_criteria=len(criteria_list),
         data_path=input_data["rawFilePath"],
-        criteria_list=criteria_list
+        criteria_list=criteria_list,
+        output_path=input_data.get("outputDir")
     )
 
     # 포맷 생성
