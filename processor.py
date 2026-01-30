@@ -443,7 +443,7 @@ class CriteriaFormulaGenerator:
         return formula
 
 class Analysis:
-    def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path=""):
+    def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path="", criteria_list=None):
         self.wb = Workbook()
         self.ws = self.wb.active
         self.tested_party = tested_party
@@ -452,6 +452,7 @@ class Analysis:
         self.name = name
         self.number_of_criteria = number_of_criteria
         self.data_path = data_path
+        self.criteria_list = criteria_list if criteria_list else []
         self.color_code = COLOR_CODES
         
         self.num_years = self.end_year - self.start_year + 1
@@ -548,6 +549,11 @@ class Analysis:
         for i in range(self.number_of_criteria):
             target_col = q_cond_col + i
             self.ws.cell(row=q_cond_row + 1, column=target_col).value = f"기준{i + 1}"
+            
+            if i < len(self.criteria_list):
+                 account_name = self.criteria_list[i].get('account', '')
+                 self.ws.cell(row=q_cond_row + 2, column=target_col).value = account_name
+
             self.ws.cell(row=q_cond_row + 1, column=target_col).fill = self.color_code["green"]
 
         q_pass_col = q_cond_col + self.number_of_criteria
@@ -1410,7 +1416,8 @@ def main_processor(payload):
        start_year=input_data["yearFrom"],
        end_year=input_data["yearTo"],
        number_of_criteria=len(criteria_list),
-       data_path=input_data["rawFilePath"]
+       data_path=input_data["rawFilePath"],
+       criteria_list=criteria_list
    )
 
     # 포맷 생성
