@@ -914,6 +914,18 @@ class Analysis:
             cell.value = f"=IFERROR(SUM({op_start}{row}:{op_end}{row})/SUM({rev_start}{row}:{rev_end}{row}),0)"
         
         maxmin_col = self.unadjusted_start_col + self.num_years + 1
+        
+        # 1. BvD ID number & Company name reference
+        # Raw Data의 BvD ID, Name 컬럼 인덱스 (raw_data_start_col, raw_data_start_col+1)
+        raw_bvd_col = get_column_letter(self.raw_data_start_col)
+        raw_name_col = get_column_letter(self.raw_data_start_col + 1)
+        
+        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+            # BvD ID (Col 2)
+            self.ws.cell(row=row, column=2).value = f"={raw_bvd_col}{row}"
+            # Company Name (Col 3)
+            self.ws.cell(row=row, column=3).value = f"={raw_name_col}{row}"
+
         for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
             cell = self.ws.cell(row=row, column=maxmin_col)
             start_letter = get_column_letter(self.unadjusted_start_col)
@@ -971,6 +983,60 @@ class Analysis:
             start_letter = get_column_letter(br_start)
             end_letter = get_column_letter(br_start + self.num_years - 1)
             cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
+
+    def insert_pass_fail_summary(self):
+        """
+        C20, C21에 탈락/통과 텍스트 입력 및 수식 적용
+        각 기준별 누적 통과/탈락 통계를 계산
+        """
+        # 1. 텍스트 입력
+        self.ws['C20'] = "탈락"
+        self.ws['C21'] = "통과"
+        self.ws['C20'].border = THIN_BORDER
+        self.ws['C21'].border = THIN_BORDER
+        
+        # 2. 수식 입력
+        data_start_row = self.qualitative_start_row + 3
+        # 데이터가 없을 경우를 대비해 max_row 체크
+        if self.ws.max_row < data_start_row:
+             data_end_row = data_start_row + 10 # 임의의 범위
+        else:
+             data_end_row = self.ws.max_row
+
+        start_col = self.quantitative_start_col
+        
+        for i in range(self.number_of_criteria):
+            target_col_idx = start_col + i
+            target_col_letter = get_column_letter(target_col_idx)
+            
+            # 범위 문자열 (예: D25:D100)
+            range_str = f"${target_col_letter}${data_start_row}:${target_col_letter}${data_end_row}"
+            
+            # 누적으로 이전 기준들의 "Yes" 조건을 모두 포함해야 함
+            # COUNTIFS(Criteria1, "Yes", Criteria2, "Yes", ..., TargetCriteria, "No/Yes")
+            
+            conditions = []
+            for j in range(i + 1):
+                prev_col_letter = get_column_letter(start_col + j)
+                prev_range = f"${prev_col_letter}${data_start_row}:${prev_col_letter}${data_end_row}"
+                conditions.append(prev_range)
+                conditions.append('"Yes"') # 일단 모두 Yes로 추가해두고 마지막만 수정
+            
+            # --- 탈락 수식 (Row 20) ---
+            # 마지막 조건은 "No"여야 함
+            fail_conditions = list(conditions)
+            fail_conditions[-1] = '"No"'
+            
+            fail_formula = f'=COUNTIFS({",".join(fail_conditions)})'
+            self.ws.cell(row=20, column=target_col_idx).value = fail_formula
+            self.ws.cell(row=20, column=target_col_idx).border = THIN_BORDER
+            
+            # --- 통과 수식 (Row 21) ---
+            # 마지막 조건도 "Yes"여야 함 (이미 conditions가 모두 "Yes"임)
+            pass_formula = f'=COUNTIFS({",".join(conditions)})'
+            self.ws.cell(row=21, column=target_col_idx).value = pass_formula
+            self.ws.cell(row=21, column=target_col_idx).border = THIN_BORDER
+            
 
     def apply_quantitative_criteria_formulas(self, criteria_configs):
         """
@@ -1095,6 +1161,88 @@ class Analysis:
             
             cell = self.ws.cell(row=row, column=pass_col)
             cell.value = formula
+
+    def apply_final_styles(self):
+        """
+        최종적으로 서식을 적용합니다.
+        1. Unadjusted, WA3(Ratio): 0.00%
+        2. WA3(Metrics), Raw Data(Turnover~), Flow: Accounting Format
+        3. All Borders
+        """
+        ACCOUNTING_FORMAT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)'
+        PERCENTAGE_FORMAT = '0.00%'
+        
+        # 데이터 영역 (헤더 제외)
+        data_start_row = self.qualitative_start_row + 3
+        max_row = self.ws.max_row
+        max_col = self.max_formatted_col
+        
+        # 1. Unadjusted (Percentage)
+        for col in range(self.unadjusted_start_col, self.unadjusted_start_col + self.unadjusted_num_cols):
+            for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = PERCENTAGE_FORMAT
+                
+        # 2. WA3 Metrics (Accounting)
+        # 종업원수 포함하려면 wa3_list 전체 적용
+        wa3_metrics_count = len(self._get_wa3_list())
+        for col in range(self.wa3_start_col, self.wa3_start_col + wa3_metrics_count):
+            for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+
+        # 3. WA3 Ratios (Percentage)
+        wa3_ratios_count = len(self._get_ratio_tab_list())
+        ratio_start_col = self.wa3_start_col + wa3_metrics_count
+        for col in range(ratio_start_col, ratio_start_col + wa3_ratios_count):
+            for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = PERCENTAGE_FORMAT
+                
+        # 4. Raw Data (Accounting from Turnover)
+        # Turnover 컬럼 인덱스 찾기
+        turnover_col_name = f"Operating revenue (Turnover)\nth USD "
+        # ordered_columns에서 Turnover의 인덱스 확인
+        try:
+            # Turnover가 포함된 첫 컬럼 인덱스를 찾음 (년도별 컬럼 중 첫번째)
+            # 여기서는 ordered_columns에 'Operating revenue (Turnover)\nth USD 2021' 처럼 년도가 붙어있으므로
+            # 기본 prefix로 검색
+            
+            # Turnover가 시작되는 첫 컬럼 찾기
+            turnover_start_index = -1
+            for idx, col_name in enumerate(self.ordered_columns):
+                if "Operating revenue (Turnover)" in col_name:
+                    turnover_start_index = idx
+                    break
+            
+            if turnover_start_index != -1:
+                abs_turnover_col = self.raw_data_start_col + turnover_start_index
+                # Raw Data 끝까지 적용
+                raw_data_end_col = self.raw_data_start_col + len(self.ordered_columns)
+                
+                for col in range(abs_turnover_col, raw_data_end_col):
+                    for row in range(data_start_row, max_row + 1):
+                        self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+        except Exception as e:
+            print(f"Warning: Raw Data 서식 적용 중 오류 발생: {e}")
+
+        # 5. Flow (Accounting)
+        # Flow 시작부터 max_formatted_col까지 (Flow가 마지막 부분이라 가정)
+        # 정확히는 flow_start_col 부터 flow 끝까지
+        flow_list = ["매출채권 (Flow)", "매입채무 (Flow)", "재고자산 (Flow)", "무형자산 (Flow)", "유형자산 (Flow)", "총자산 (Flow)"]
+        num_flow_cols = self.num_years + 1
+        total_flow_cols = len(flow_list) * num_flow_cols
+        
+        for col in range(self.flow_start_col, self.flow_start_col + total_flow_cols):
+             for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+        
+        # 6. All Borders
+        # 전체 테이블 범위: qualitative_start_row 부터 max_row, 1부터 max_col
+        # max_formatted_col이 정확하지 않을 수 있으므로 max_col 재계산
+        final_max_col = max(self.max_formatted_col, self.flow_start_col + total_flow_cols - 1)
+        
+        for row in range(self.qualitative_start_row, max_row + 1):
+            for col in range(1, final_max_col + 1):
+                cell = self.ws.cell(row=row, column=col)
+                cell.border = THIN_BORDER
 
     def save_file(self):
         self.wb.save(f"{self.name}.xlsx")
@@ -1388,48 +1536,54 @@ class SimpleUserInputConverter:
 
 
 def main_processor(payload):
-   
-   input_data = payload["inputData"]
-   criteria_list = payload["criteriaList"]
+    
+    input_data = payload["inputData"]
+    criteria_list = payload["criteriaList"]
 
-        # input_data = {
-        #     "corpName": corp_name,
-        #     "targetCorp": target_corp,
-        #     "yearFrom": year_from,
-        #     "yearTo": year_to,
-        #     "rawFilePath": self.file_path
-        # }
-            #         criteria_list.append({
-            #     "seq": idx,
-            #     "account": account,
-            #     "xValue": x_value,
-            #     "xCompare": x_compare,
-            #     "include": include
-            # })
-   
-   converter = SimpleUserInputConverter(start_year=input_data["yearFrom"], end_year=input_data["yearTo"])
-   converted = converter.convert_simple_input(criteria_list)
+    # input_data = {
+    #     "corpName": corp_name,
+    #     "targetCorp": target_corp,
+    #     "yearFrom": year_from,
+    #     "yearTo": year_to,
+    #     "rawFilePath": self.file_path
+    # }
+    #         criteria_list.append({
+    #     "seq": idx,
+    #     "account": account,
+    #     "xValue": x_value,
+    #     "xCompare": x_compare,
+    #     "include": include
+    # })
+    
+    converter = SimpleUserInputConverter(start_year=input_data["yearFrom"], end_year=input_data["yearTo"])
+    converted = converter.convert_simple_input(criteria_list)
 
-   processor = Analysis(
-       tested_party=input_data["targetCorp"],
-       name=input_data["corpName"],
-       start_year=input_data["yearFrom"],
-       end_year=input_data["yearTo"],
-       number_of_criteria=len(criteria_list),
-       data_path=input_data["rawFilePath"],
-       criteria_list=criteria_list
-   )
+    processor = Analysis(
+        tested_party=input_data["targetCorp"],
+        name=input_data["corpName"],
+        start_year=input_data["yearFrom"],
+        end_year=input_data["yearTo"],
+        number_of_criteria=len(criteria_list),
+        data_path=input_data["rawFilePath"],
+        criteria_list=criteria_list
+    )
 
     # 포맷 생성
-   processor.create_format()
+    processor.create_format()
     # Raw 데이터 채우기 (파일이 있다면)
-   processor._populate_raw_data_from_excel()
+    processor._populate_raw_data_from_excel()
     # 계산 수식 삽입
-   processor.insert_formular()
+    processor.insert_formular()
 
-   processor.apply_quantitative_criteria_formulas(converted)
+    processor.apply_quantitative_criteria_formulas(converted)
+    
+    # 통과/탈락 요약 수식 (Row 20, 21)
+    processor.insert_pass_fail_summary()
 
-   processor.save_file()
+    # 최종 서식 적용 (Accounting, %, Border)
+    processor.apply_final_styles()
+
+    processor.save_file()
 
 if __name__ == "__main__":
     test_payload = {'inputData': {'corpName': 'Test', 'targetCorp': 'Test', 'yearFrom': 2021, 'yearTo': 2023, 'rawFilePath': 'C:/Users/JX851XF/OneDrive - EY/Desktop/Python/BM/raw_1.xlsx'}, 'criteriaList': [{'seq': 1, 'account': '상장여부', 'xValue': 'Listed', 'xCompare': '텍스트 일치', 'include': True}, {'seq': 2, 'account': '영업이익(평균)', 'xValue': '0', 'xCompare': '미만', 'include': False}, {'seq': 3, 'account': '감사의견', 'xValue': 'Unqualified', 'xCompare': 'All equals', 'include': True}]}
