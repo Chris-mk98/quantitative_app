@@ -1712,8 +1712,3 @@ def main_processor(payload):
     processor.apply_final_styles()
 
     processor.save_file()
-
-if __name__ == "__main__":
-    test_payload = {'inputData': {'corpName': 'Test', 'targetCorp': 'Test', 'yearFrom': 2021, 'yearTo': 2023, 'rawFilePath': 'C:/Users/JX851XF/OneDrive - EY/Desktop/Python/BM/raw_1.xlsx'}, 'criteriaList': [{'seq': 1, 'account': '상장여부', 'xValue': 'Listed', 'xCompare': '텍스트 일치', 'include': True}, {'seq': 2, 'account': '영업이익(평균)', 'xValue': '0', 'xCompare': '미만', 'include': False}, {'seq': 3, 'account': '감사의견', 'xValue': 'Unqualified', 'xCompare': 'All equals', 'include': True}]}
-
-    main_processor(test_payload)
