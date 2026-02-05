@@ -501,8 +501,8 @@ class Analysis:
         return {
             "DB\nDescription": "", "Full\nOverview": "", "Main\nactivity": "",
             "Main\nProducts and Services": "", "US-SIC": "", "[전기]\n선정여부": "",
-            "[전기]\nPreparer's Comment": "", "[전기]\n1차분류\n(ex. 특이사건, 제품상이, ...)": "", "[전기]\nReviewer's Comment": "",
-            "[당기]\nPreparer's Comment": "", "[당기]\n1차분류\n(ex. 특이사건, 제품상이, ...)": "", "[당기]\nReviewer's Comment": "",
+            "[전기]\nPreparer's Comment": "", "[전기]\n1차분류\n(ex. 제품상이)": "", "[전기]\nReviewer's Comment": "",
+            "[당기]\nPreparer's Comment": "", "[당기]\n1차분류\n(ex. 제품상이)": "", "[당기]\nReviewer's Comment": "",
             "[당기]\nPreparer 선정": ""
         }
 
@@ -524,6 +524,11 @@ class Analysis:
     def _apply_common_styles(self, min_row, max_row, min_col, max_col):
         for r_idx in range(min_row, max_row + 1):
             for c_idx in range(min_col, max_col + 1):
+                # Skip empty columns between Final Selection and Unadjusted
+                if hasattr(self, 'final_selection_start_col') and hasattr(self, 'unadjusted_start_col'):
+                    if self.final_selection_start_col < c_idx < self.unadjusted_start_col:
+                        continue
+
                 cell = self.ws.cell(row=r_idx, column=c_idx)
                 cell.border = THIN_BORDER
                 cell.font = BOLD_FONT
@@ -997,6 +1002,27 @@ class Analysis:
             end_letter = get_column_letter(br_start + self.num_years - 1)
             cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
 
+        # --- Qualitative Reference Formulas ---
+        qual_start = self.qualitative_start_col
+        # Column 1: DB Description -> Primary business line
+        pbl_col = self.raw_col_alphabet["Primary business line"]
+        # Column 2: Full Overview -> Full overview
+        fo_col = self.raw_col_alphabet["Full overview"]
+        # Column 3: Main activity -> Main activity
+        ma_col = self.raw_col_alphabet["Main activity"]
+        # Column 4: Main Products and Services -> Main products and services
+        mps_col = self.raw_col_alphabet["Main products and services"]
+        # Column 5: US-SIC -> US SIC code & " - " & US SIC description
+        sic_col = self.raw_col_alphabet["US SIC, primary code(s)"]
+        sic_desc_col = self.raw_col_alphabet["US SIC, primary code(s) - description"]
+
+        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+            self.ws.cell(row=row, column=qual_start).value = f"={pbl_col}{row}"
+            self.ws.cell(row=row, column=qual_start + 1).value = f"={fo_col}{row}"
+            self.ws.cell(row=row, column=qual_start + 2).value = f"={ma_col}{row}"
+            self.ws.cell(row=row, column=qual_start + 3).value = f"={mps_col}{row}"
+            self.ws.cell(row=row, column=qual_start + 4).value = f'={sic_col}{row} & " - " & {sic_desc_col}{row}'
+
     def insert_pass_fail_summary(self):
         """
         C20, C21에 탈락/통과 텍스트 입력 및 수식 적용
@@ -1267,6 +1293,11 @@ class Analysis:
         
         for row in range(self.qualitative_start_row, max_row + 1):
             for col in range(1, final_max_col + 1):
+                # Skip and clear borders for empty columns between Final Selection and Unadjusted
+                if self.final_selection_start_col < col < self.unadjusted_start_col:
+                    self.ws.cell(row=row, column=col).border = Border()
+                    continue
+                    
                 cell = self.ws.cell(row=row, column=col)
                 cell.border = THIN_BORDER
         
