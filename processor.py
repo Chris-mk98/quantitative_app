@@ -464,8 +464,8 @@ class Analysis:
         self.quantitative_start_col = 4
         self.qualitative_start_row = self.quantitative_start_row
         self.qualitative_start_col = self.quantitative_start_col + self.number_of_criteria + 1
-        self.selection_history_start_col = self.qualitative_start_col + len(self._get_qualitative_criteria_keys())
-        self.unadjusted_start_col = self.selection_history_start_col + 3
+        self.final_selection_start_col = self.qualitative_start_col + len(self._get_qualitative_criteria_keys())
+        self.unadjusted_start_col = self.final_selection_start_col + 3
         self.unadjusted_num_cols = (self.num_years + 2) * 3
         self.wa3_start_col = self.unadjusted_start_col + self.unadjusted_num_cols
         self.raw_data_start_col = self.wa3_start_col + len(self._get_wa3_list()) + len(self._get_ratio_tab_list())
@@ -499,10 +499,11 @@ class Analysis:
 
     def _get_qualitative_criteria_data(self):
         return {
-            "DB\nDescription": "", "기준1": "메인액티비티", "기준2": "기타",
-            "기준3": "제품 또는 용역", "기준4": "정보불충분", "기준5": "특이사건",
-            "기준6": "기타", "비고": "", "질적통과(1차)\n전기선정": "",
-            "질적통과(2차)\n당기선정": ""
+            "DB\nDescription": "", "Full\nOverview": "", "Main\nactivity": "",
+            "Main\nProducts and Services": "", "US-SIC": "", "[전기]\n선정여부": "",
+            "[전기]\nPreparer's Comment": "", "[전기]\n1차분류\n(ex. 특이사건, 제품상이, ...)": "", "[전기]\nReviewer's Comment": "",
+            "[당기]\nPreparer's Comment": "", "[당기]\n1차분류\n(ex. 특이사건, 제품상이, ...)": "", "[당기]\nReviewer's Comment": "",
+            "[당기]\nPreparer 선정": ""
         }
 
     def _get_qualitative_criteria_keys(self):
@@ -638,16 +639,16 @@ class Analysis:
             self.ws.cell(row=q_start_row + 1, column=target_col).fill = self.color_code['yellow']
             self.ws.cell(row=q_start_row + 2, column=target_col).fill = self.color_code['yellow']
 
-    def _set_selection_history_columns(self):
-        s_hist_list = ["FY2023 BEPS 선정이력", "최종선정/제외 Comment", "선정여부 추가검토"]
-        s_hist_row = self.qualitative_start_row
-        s_hist_col = self.selection_history_start_col
+    def _set_final_selection_columns(self):
+        final_selection_list = ["[당기]\n최종선정"]
+        final_selection_row = self.qualitative_start_row
+        final_selection_col = self.final_selection_start_col
 
-        for col_idx, item in enumerate(s_hist_list):
-            target_col = s_hist_col + col_idx
-            self.ws.cell(row=s_hist_row, column=target_col).value = item
-            self.ws.cell(row=s_hist_row, column=target_col).fill = self.color_code["orange"]
-            self.ws.merge_cells(start_row=s_hist_row, end_row=s_hist_row + 2,
+        for col_idx, item in enumerate(final_selection_list):
+            target_col = final_selection_col + col_idx
+            self.ws.cell(row=final_selection_row, column=target_col).value = item
+            self.ws.cell(row=final_selection_row, column=target_col).fill = self.color_code["orange"]
+            self.ws.merge_cells(start_row=final_selection_row, end_row=final_selection_row + 2,
                             start_column=target_col, end_column=target_col)
 
     def _set_unadjusted_columns(self):
@@ -819,43 +820,11 @@ class Analysis:
                     f"'{target_col_name}' 컬럼이 없습니다."
                 )
 
-    # def _populate_raw_data_from_excel(self):
-    #     if not self.data_path:
-    #         print("Error: data_path가 설정되지 않았습니다. Excel 파일 경로를 지정해주세요.")
-    #         return
-        
-    #     try:
-    #         source_df = pd.read_excel(self.data_path)
-    #     except FileNotFoundError:
-    #         print(f"Error: 파일 '{self.data_path}'을(를) 찾을 수 없습니다.")
-    #         return
-    #     except Exception as e:
-    #         print(f"Error: Excel 파일을 읽는 중 오류 발생: {e}")
-    #         return
-
-    #     data_body_start_row = self.qualitative_start_row + 3
-
-    #     for i in range(len(source_df)):
-    #         self.ws.cell(row=data_body_start_row + i, column=1).value = i + 1
-
-    #     for col_idx, target_col_name in enumerate(self.ordered_columns):
-    #         sheet_col_num = self.raw_data_start_col + col_idx 
-            
-    #         if target_col_name in source_df.columns:
-    #             source_series = source_df[target_col_name]
-    #             for row_idx, value in enumerate(source_series):
-    #                 if pd.isna(value):
-    #                     value = None
-    #                 cell_to_write = self.ws.cell(row=data_body_start_row + row_idx, column=sheet_col_num)
-    #                 cell_to_write.value = value
-    #         else:
-    #             print(f"Warning: 원본 Excel 파일 '{self.data_path}'에 '{target_col_name}' 컬럼이 없습니다.")
-
     def create_format(self):
         self._set_basic_info()
         self._set_quantitative_criteria_table()
         self._set_qualitative_criteria_table()
-        self._set_selection_history_columns()
+        self._set_final_selection_columns()
         self._set_unadjusted_columns()
         self._set_wa3_columns()
         self._set_raw_data_columns()
@@ -1081,7 +1050,6 @@ class Analysis:
             self.ws.cell(row=21, column=target_col_idx).value = pass_formula
             self.ws.cell(row=21, column=target_col_idx).border = THIN_BORDER
             
-
     def apply_quantitative_criteria_formulas(self, criteria_configs):
         """
         양적기준 수식을 실제 셀에 적용합니다.
@@ -1361,18 +1329,46 @@ class Analysis:
             self.ws.column_dimensions[col_letter].width = format_width
 
     def save_file(self):
-        filename = f"{self.name}.xlsx"
+        # Naming Rule: [Company]_QuantitativeAnalysis_[Period].xlsx
+        # e.g. Samsung_QuantitativeAnalysis_22-24.xlsx
+        
+        # Period string: e.g. "21-23"
+        start_yy = str(self.start_year)[-2:]
+        end_yy = str(self.end_year)[-2:]
+        period_str = f"{start_yy}-{end_yy}"
+        
+        base_filename = f"{self.name}_양적분석_{period_str}.xlsx"
+        
         if self.output_path:
-            # 경로가 유효한지 확인하고 없으면 생성 등은 하지 않음 (UI에서 선택하므로)
-            filepath = os.path.join(self.output_path, filename)
+            target_dir = self.output_path
         else:
-            filepath = filename
+            target_dir = os.getcwd() # Should generally not happen given UI logic
             
+        filepath = os.path.join(target_dir, base_filename)
+        
+        # Handle Duplicates: append (1), (2)...
+        if os.path.exists(filepath):
+            base, ext = os.path.splitext(base_filename)
+            counter = 1
+            while True:
+                new_filename = f"{base}({counter}){ext}"
+                new_filepath = os.path.join(target_dir, new_filename)
+                if not os.path.exists(new_filepath):
+                    filepath = new_filepath
+                    break
+                counter += 1
+                
         try:
             self.wb.save(filepath)
             print(f"파일 저장 완료: {filepath}")
+            
+        except PermissionError:
+            print(f"Error: 파일 저장 실패 (권한 거부). '{filepath}' 파일이 열려있는지 확인하세요.")
+            raise PermissionError(f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요.")
+            
         except Exception as e:
             print(f"파일 저장 실패: {e}")
+            raise e
 
 
 
@@ -1411,63 +1407,63 @@ class SimpleUserInputConverter:
            'default_include': True
        },
        # 평균값 (WA3) - 금액
-       "매출액(평균)": {
+       "매출액(금액, 평균)": {
            'type': 'wa3',
            'field_name': '매출액',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': True
        },
-       "영업이익(평균)": {
+       "영업이익(금액, 평균)": {
            'type': 'wa3',
            'field_name': '영업이익',
            'condition_type': 'lt',
            'default_value': 0,
            'default_include': False
        },
-       "판매및관리비(평균)": {  # 영업비용
+       "영업비용(금액, 평균)": {  # 영업비용
            'type': 'wa3',
            'field_name': '영업비용',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "재고자산(평균)": {
+       "재고자산(금액, 평균)": {
            'type': 'wa3',
            'field_name': '재고자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "연구개발비(평균)": {
+       "연구개발비(금액, 평균)": {
            'type': 'wa3',
            'field_name': '연구개발비',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "무형자산(평균)": {
+       "무형자산(금액, 평균)": {
            'type': 'wa3',
            'field_name': '무형자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "유형자산(평균)": {
+       "유형자산(금액, 평균)": {
            'type': 'wa3',
            'field_name': '유형자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "총자산(평균)": {
+       "총자산(금액, 평균)": {
            'type': 'wa3',
            'field_name': '총자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "매출원가(평균)": {
+       "매출원가(금액, 평균)": {
            'type': 'wa3',
            'field_name': '매출원가',
            'condition_type': 'gt',
@@ -1475,7 +1471,7 @@ class SimpleUserInputConverter:
            'default_include': False
        },
        # 개별값 - 금액 (1개년이라도)
-       "영업이익(1개년이라도)": {
+       "영업이익(금액, 1개년이라도)": {
            'type': 'numeric',
            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
            'condition_type': 'lt',
@@ -1484,7 +1480,7 @@ class SimpleUserInputConverter:
            'default_include': False
        },
        # 개별값 - 금액 (3년연속 = 모든 연도)
-       "영업이익(연속)": {
+       "영업이익(금액, 연속)": {
            'type': 'numeric',
            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
            'condition_type': 'lt',
@@ -1493,35 +1489,35 @@ class SimpleUserInputConverter:
            'default_include': False
        },
        # 비율 (평균)
-       "연구개발비/매출액(평균)": {
+       "연구개발비/매출액(비율, 평균)": {
            'type': 'ratio',
            'field_name': '연구개발비/매출액',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "영업비용/매출액(평균)": {
+       "영업비용/매출액(비율, 평균)": {
            'type': 'ratio',
            'field_name': '영업비용/매출액',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "무형자산/총자산(평균)": {
+       "무형자산/총자산(비율, 평균)": {
            'type': 'ratio',
            'field_name': '무형자산/총자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "유형자산/총자산(평균)": {
+       "유형자산/총자산(비율, 평균)": {
            'type': 'ratio',
            'field_name': '유형자산/총자산',
            'condition_type': 'gt',
            'default_value': 0,
            'default_include': False
        },
-       "재고자산/총자산(평균)": {
+       "재고자산/총자산(비율, 평균)": {
            'type': 'ratio',
            'field_name': '재고자산/총자산',
            'condition_type': 'gt',

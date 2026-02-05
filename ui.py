@@ -30,7 +30,7 @@ class QuantitativeUI:
         info = ttk.LabelFrame(frame, text="기본 정보", padding=10)
         info.grid(row=0, column=0, columnspan=4, sticky="w", pady=5)
 
-        ttk.Label(info, text="법인명").grid(row=0, column=0, sticky="e")
+        ttk.Label(info, text="클라이언트명").grid(row=0, column=0, sticky="e")
         self.corp_name = ttk.Entry(info, width=20)
         self.corp_name.grid(row=0, column=1)
 
@@ -51,9 +51,10 @@ class QuantitativeUI:
         self.file_label = ttk.Label(frame, text="선택된 파일 없음")
         self.file_label.grid(row=1, column=1, sticky="w")
 
-        ttk.Button(frame, text="저장 경로 선택", command=self.select_output_dir).grid(row=2, column=0, pady=5)
-        self.output_dir_label = ttk.Label(frame, text="선택된 폴더 없음")
-        self.output_dir_label.grid(row=2, column=1, sticky="w")
+        self.file_label = ttk.Label(frame, text="선택된 파일 없음")
+        self.file_label.grid(row=1, column=1, sticky="w")
+        
+        # 저장 경로 선택 UI 제거됨 (자동 지정)
 
         ttk.Button(frame, text="기준 추가", command=self.add_row).grid(row=3, column=0, pady=5)
 
@@ -66,6 +67,20 @@ class QuantitativeUI:
 
         ttk.Button(frame, text="변환", command=self.on_convert).grid(row=5, column=0, pady=10)
 
+        # -------------------------
+        # 설명 문구 (하단)
+        # -------------------------
+        desc_frame = ttk.LabelFrame(frame, text="사용 가이드", padding=10)
+        desc_frame.grid(row=6, column=0, columnspan=4, sticky="ew", pady=10)
+        
+        guide_text = (
+            "1. Raw 파일을 선택하세요. (기본 정보 입력 필수)\n"
+            "2. 분석 계정과 X값(기준값)을 설정하세요, 비율계정은 소수점으로 입력해야합니다.(예시 0.01 -> 1%)\n"
+            "3. '변환' 버튼을 누르면, 분석 결과가 입력 파일과 동일한 폴더에 저장됩니다.\n"
+            "   (파일명: [클라이언트명]_양적분석_[기간].xlsx)"
+        )
+        ttk.Label(desc_frame, text=guide_text).pack(anchor="w")
+
     # -------------------------
     # 파일 선택
     # -------------------------
@@ -76,10 +91,10 @@ class QuantitativeUI:
         if self.file_path:
             self.file_label.config(text=self.file_path)
 
-    def select_output_dir(self):
-        self.output_dir_path = filedialog.askdirectory()
-        if self.output_dir_path:
-            self.output_dir_label.config(text=self.output_dir_path)
+            self.file_label.config(text=self.file_path)
+
+    # Output directory selection is removed as per requirements.
+    # Default behavior is to save in the same directory as input file.
 
     # -------------------------
     # 기준 row 추가
@@ -204,9 +219,9 @@ class QuantitativeUI:
             messagebox.showerror("입력 오류", "Raw 파일을 선택하세요.")
             return
 
-        if not self.output_dir_path:
-            messagebox.showerror("입력 오류", "저장 경로를 선택하세요.")
-            return
+        # Output Dir - user no longer selects manually
+        import os
+        self.output_dir_path = os.path.dirname(self.file_path)
 
         try:
             year_from = int(year_from)
@@ -260,6 +275,12 @@ class QuantitativeUI:
     
         print(payload)
 
-        from processor import main_processor
-        main_processor(payload)
+        try:
+            from processor import main_processor
+            main_processor(payload)
+            messagebox.showinfo("완료", "분석 및 파일 저장이 완료되었습니다.")
+        except PermissionError as pe:
+            messagebox.showerror("저장 오류", str(pe))
+        except Exception as e:
+            messagebox.showerror("오류", f"작업 중 오류가 발생했습니다:\n{e}")
 
