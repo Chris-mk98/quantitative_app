@@ -78,6 +78,12 @@ THIN_BORDER = Border(left=Side(style='thin'),
 BOLD_FONT = Font(bold=True)
 CENTER_ALIGN = Alignment(horizontal='center', vertical='center')
 
+
+def _escape_excel_string(value: str) -> str:
+    """Excel 수식 문자열 내 큰따옴표를 이스케이프하여 formula injection을 방지합니다."""
+    return str(value).replace('"', '""')
+
+
 class CriteriaFormulaGenerator:
     """양적기준 수식 생성 클래스"""
     
@@ -205,62 +211,53 @@ class CriteriaFormulaGenerator:
         """
         result = "Yes" if include else "No"
         opposite = "No" if include else "Yes"
-        
+        safe_value = _escape_excel_string(value)
+
         cols = self._get_column_range(field_name, row_number)
-        
+
         if not cols:
-            return f'="{opposite}"  # Error: Field not found'
-        
+            return f'="{opposite}"'
+
         if condition_type == "blank":
-            # 공란인 경우
             if len(cols) == 1:
                 formula = f'=IF({cols[0]}="","{result}","{opposite}")'
             else:
-                # 모든 연도가 공란인 경우
                 conditions = ",".join([f'{col}=""' for col in cols])
                 formula = f'=IF(AND({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "not_blank":
-            # 비공란인 경우 (데이터가 있는 경우)
             if len(cols) == 1:
                 formula = f'=IF({cols[0]}<>"","{result}","{opposite}")'
             else:
-                # 모든 연도에 데이터가 있는 경우
                 conditions = ",".join([f'{col}<>""' for col in cols])
                 formula = f'=IF(AND({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "equals":
-            # 특정 값과 같은 경우
             if len(cols) == 1:
-                formula = f'=IF({cols[0]}="{value}","{result}","{opposite}")'
+                formula = f'=IF({cols[0]}="{safe_value}","{result}","{opposite}")'
             else:
-                # 한 번이라도 같은 경우
-                conditions = ",".join([f'{col}="{value}"' for col in cols])
+                conditions = ",".join([f'{col}="{safe_value}"' for col in cols])
                 formula = f'=IF(OR({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "all_equals":
-            # 모든 연도에서 특정 값과 같은 경우
             if len(cols) == 1:
-                formula = f'=IF({cols[0]}="{value}","{result}","{opposite}")'
+                formula = f'=IF({cols[0]}="{safe_value}","{result}","{opposite}")'
             else:
-                # COUNTIF 사용 (예: 감사의견 적정)
                 first_col = cols[0].replace(str(row_number), '')
                 last_col = cols[-1].replace(str(row_number), '')
                 range_str = f"${first_col}${row_number}:${last_col}${row_number}"
-                formula = f'=IF(COUNTIF({range_str},"{value}")={len(cols)},"{result}","{opposite}")'
-        
+                formula = f'=IF(COUNTIF({range_str},"{safe_value}")={len(cols)},"{result}","{opposite}")'
+
         elif condition_type == "contains":
-            # 특정 단어를 포함하는 경우
             if len(cols) == 1:
-                formula = f'=IF(ISNUMBER(SEARCH("{value}",{cols[0]})),"{result}","{opposite}")'
+                formula = f'=IF(ISNUMBER(SEARCH("{safe_value}",{cols[0]})),"{result}","{opposite}")'
             else:
-                # 한 번이라도 포함하는 경우
-                conditions = ",".join([f'ISNUMBER(SEARCH("{value}",{col}))' for col in cols])
+                conditions = ",".join([f'ISNUMBER(SEARCH("{safe_value}",{col}))' for col in cols])
                 formula = f'=IF(OR({conditions}),"{result}","{opposite}")'
-        
+
         else:
-            formula = f'="{opposite}"  # Error: Unknown condition type'
-        
+            formula = f'="{opposite}"'
+
         return formula
     
     def generate_numeric_criteria(self, field_name, condition_type, threshold, row_number, 
@@ -1021,11 +1018,10 @@ class Analysis:
         
         # 2. 수식 입력
         data_start_row = self.qualitative_start_row + 3
-        # 데이터가 없을 경우를 대비해 max_row 체크
         if self.ws.max_row < data_start_row:
-             data_end_row = data_start_row + 10 # 임의의 범위
+            data_end_row = data_start_row  # 데이터 없음 — 수식 범위 최소화
         else:
-             data_end_row = self.ws.max_row
+            data_end_row = self.ws.max_row
 
         start_col = self.quantitative_start_col
         
@@ -1313,296 +1309,216 @@ class Analysis:
 
         except PermissionError:
             logger.error("파일 저장 실패 (권한 거부): '%s'", filepath)
-            raise PermissionError(f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요.")
+            raise PermissionError(
+                f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n"
+                "파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요."
+            )
 
         except Exception as e:
             logger.error("파일 저장 실패: %s", e)
             raise
 
+        finally:
+            self.wb.close()
+
 
 
 class SimpleUserInputConverter:
-   """
-   단순화된 사용자 입력 변환 클래스
-   Account만 받아서 자동으로 Type과 계산구분 결정
-   """
-   # Account별 자동 설정
-   ACCOUNT_CONFIG = {
-       # 텍스트 타입
-       "감사의견": {
-           'type': 'text',
-           'field_name': 'Audit status\n',
-           'condition_type': 'all_equals',
-           'default_value': 'Unqualified',
-           'default_include': True
-       },
-       "상장여부": {
-           'type': 'text',
-           'field_name': 'Listing status',
-           'condition_type': 'equals',
-           'default_value': 'Listed',
-           'default_include': True
-       },
-       # 가용성
-       "재무정보가용성": {
-           'type': 'data_availability',
-           'field_names': [
-               "Operating revenue (Turnover)\nth USD ",
-               "Gross profit\nth USD ",
-               "Operating profit (loss) [EBIT]\nth USD "
-           ],
-           'default_include': True
-       },
-       # 평균값 (WA3) - 금액
-       "매출액(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': True
-       },
-       "영업이익(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '영업이익',
-           'condition_type': 'lt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "영업비용(금액, 평균)": {  # 영업비용
-           'type': 'wa3',
-           'field_name': '영업비용',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '재고자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "연구개발비(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '연구개발비',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "무형자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '무형자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "유형자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '유형자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "총자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "매출원가(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '매출원가',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 개별값 - 금액 (1개년이라도)
-       "영업이익(금액, 1개년이라도)": {
-           'type': 'numeric',
-           'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
-           'condition_type': 'lt',
-           'count_requirement': 'any',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 개별값 - 금액 (3년연속 = 모든 연도)
-       "영업이익(금액, 연속)": {
-           'type': 'numeric',
-           'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
-           'condition_type': 'lt',
-           'count_requirement': 'all',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 비율 (평균)
-       "연구개발비/매출액(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '연구개발비/매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "영업비용/매출액(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '영업비용/매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "무형자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '무형자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "유형자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '유형자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '재고자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산보유일수(365/재고자산회전율)(평균)": {
-           'type': 'ratio',
-           'field_name': '재고자산보유일수',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       }
-   }
-   # X비교 매핑
-   COMPARISON_MAPPING = {
-       "초과": "gt",
-       "이상": "gte",
-       "미만": "lt",
-       "이하": "lte",
-       "같음": "eq",
-       "공란": "blank",
-       "공란아님": "not_blank",
-       "텍스트 일치": "equals",
-       "텍스트 포함": "contains",
-       "All equals": "all_equals"
-   }
-   # 포함/제외 매핑
-   INCLUDE_MAPPING = {
-       "포함": True,
-       "제외": False
-   }
-   def __init__(self, start_year, end_year):
-       """
-       Parameters:
-       - start_year: 분석 시작 연도
-       - end_year: 분석 종료 연도
-       """
-       self.start_year = start_year
-       self.end_year = end_year
-       self.num_years = end_year - start_year + 1
-   def convert_simple_input(self, user_criteria):
-       """
-       단순화된 사용자 입력을 프로그램 config로 변환
-       Parameters:
-       - user_criteria: 딕셔너리 또는 리스트
-         {
-             'account': 'Account 이름',
-             'xValue': 숫자 또는 텍스트 (선택),
-             'xCompare': '초과' | '이상' | ... (선택),
-             'include': '포함' | '제외' (선택)
-         }
-       Returns:
-       - config 딕셔너리 리스트
-       """
-       if isinstance(user_criteria, list):
-           return [self._convert_single_simple_criteria(c) for c in user_criteria]
-       else:
-           return self._convert_single_simple_criteria(user_criteria)
-       
-   def _convert_single_simple_criteria(self, user_input):
-       """단일 기준 변환 (단순화)"""
-       # NaN 값 처리
-       def safe_str(value, default=''):
-           if pd.isna(value):
-               return default
-           return str(value).strip()
-       def safe_value(value, default=None):
-           if pd.isna(value):
-               return default
-           return value
-       # 사용자 입력 파싱
-       account = safe_str(user_input.get('account', ''))
-       user_x_value = safe_value(user_input.get('xValue'))
-       user_x_compare = safe_str(user_input.get('xCompare', ''))
-       user_include = safe_str(user_input.get('include', ''))
-       # Account 설정 가져오기
-       if account not in self.ACCOUNT_CONFIG:
-           logger.warning("알 수 없는 Account '%s'. 건너뜁니다.", account)
-           return None
-       account_config = self.ACCOUNT_CONFIG[account].copy()
-       # xValue 오버라이드 (사용자가 입력한 경우)
-       if user_x_value is not None:
-           account_config['value'] = user_x_value
-       else:
-           account_config['value'] = account_config.get('default_value', 0)
-       # xCompare 오버라이드 (사용자가 입력한 경우)
-       if user_x_compare:
-           mapped_compare = self.COMPARISON_MAPPING.get(user_x_compare)
-           if mapped_compare:
-               account_config['condition_type'] = mapped_compare
-       # include 오버라이드 (사용자가 입력한 경우)
-       if user_include:
-           mapped_include = self.INCLUDE_MAPPING.get(user_include)
-           if mapped_include is not None:
-               account_config['include'] = mapped_include
-       else:
-           account_config['include'] = account_config.get('default_include', True)
-       # 불필요한 default_ 키 제거
-       account_config.pop('default_value', None)
-       account_config.pop('default_include', None)
-       return account_config
-   
+    """단순화된 사용자 입력 변환 클래스. Account명만 받아서 타입과 계산구분을 자동 결정."""
 
-   def load_criteria_from_excel(self, excel_path, sheet_name="컨트롤시트"):
-       """
-       엑셀 파일에서 단순화된 기준 정보를 읽어옴
-       Parameters:
-       - excel_path: 엑셀 파일 경로
-       - sheet_name: 시트 이름 (기본값: "컨트롤시트")
-       Returns:
-       - 변환된 criteria_configs 리스트
-       """
-       try:
-           df = pd.read_excel(excel_path, sheet_name=sheet_name)
-       except Exception as e:
-           logger.error("컨트롤시트를 읽는 중 오류 발생: %s", e)
-           return []
-       # 필요한 컬럼 확인
-       required_columns = ['account']
-       optional_columns = ['xValue', 'xCompare', 'include']
-       if 'account' not in df.columns:
-           logger.error("컨트롤시트에 'account' 컬럼이 없습니다.")
-           return []
-       # account가 비어있는 행 제거
-       df = df.dropna(subset=['account'], how='all')
-       # 사용 가능한 컬럼만 선택
-       available_columns = [col for col in required_columns + optional_columns if col in df.columns]
-       # 각 행을 딕셔너리로 변환
-       user_criteria_list = df[available_columns].to_dict('records')
-       # 프로그램 config로 변환
-       converted_configs = []
-       for criteria in user_criteria_list:
-           config = self._convert_single_simple_criteria(criteria)
-           if config is not None:  # None이 아닌 것만 추가
-               converted_configs.append(config)
-       logger.info("컨트롤시트에서 %d개 기준을 읽어왔습니다.", len(converted_configs))
-       return converted_configs
+    ACCOUNT_CONFIG = {
+        # 텍스트 타입
+        "감사의견": {
+            'type': 'text',
+            'field_name': 'Audit status\n',
+            'condition_type': 'all_equals',
+            'default_value': 'Unqualified',
+            'default_include': True
+        },
+        "상장여부": {
+            'type': 'text',
+            'field_name': 'Listing status',
+            'condition_type': 'equals',
+            'default_value': 'Listed',
+            'default_include': True
+        },
+        # 가용성
+        "재무정보가용성": {
+            'type': 'data_availability',
+            'field_names': [
+                "Operating revenue (Turnover)\nth USD ",
+                "Gross profit\nth USD ",
+                "Operating profit (loss) [EBIT]\nth USD "
+            ],
+            'default_include': True
+        },
+        # 평균값 (WA3) - 금액
+        "매출액(금액, 평균)": {
+            'type': 'wa3', 'field_name': '매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': True
+        },
+        "영업이익(금액, 평균)": {
+            'type': 'wa3', 'field_name': '영업이익',
+            'condition_type': 'lt', 'default_value': 0, 'default_include': False
+        },
+        "영업비용(금액, 평균)": {
+            'type': 'wa3', 'field_name': '영업비용',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '재고자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "연구개발비(금액, 평균)": {
+            'type': 'wa3', 'field_name': '연구개발비',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "무형자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '무형자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "유형자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '유형자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "총자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "매출원가(금액, 평균)": {
+            'type': 'wa3', 'field_name': '매출원가',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        # 개별값 - 금액
+        "영업이익(금액, 1개년이라도)": {
+            'type': 'numeric',
+            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
+            'condition_type': 'lt', 'count_requirement': 'any',
+            'default_value': 0, 'default_include': False
+        },
+        "영업이익(금액, 연속)": {
+            'type': 'numeric',
+            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
+            'condition_type': 'lt', 'count_requirement': 'all',
+            'default_value': 0, 'default_include': False
+        },
+        # 비율 (평균)
+        "연구개발비/매출액(비율, 평균)": {
+            'type': 'ratio', 'field_name': '연구개발비/매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "영업비용/매출액(비율, 평균)": {
+            'type': 'ratio', 'field_name': '영업비용/매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "무형자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '무형자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "유형자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '유형자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '재고자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산보유일수(365/재고자산회전율)(평균)": {
+            'type': 'ratio', 'field_name': '재고자산보유일수',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+    }
+
+    COMPARISON_MAPPING = {
+        "초과": "gt", "이상": "gte", "미만": "lt", "이하": "lte", "같음": "eq",
+        "공란": "blank", "공란아님": "not_blank",
+        "텍스트 일치": "equals", "텍스트 포함": "contains", "All equals": "all_equals",
+    }
+
+    INCLUDE_MAPPING = {"포함": True, "제외": False}
+
+    def __init__(self, start_year, end_year):
+        self.start_year = start_year
+        self.end_year = end_year
+        self.num_years = end_year - start_year + 1
+
+    def convert_simple_input(self, user_criteria):
+        """단순화된 사용자 입력을 프로그램 config로 변환. 리스트 또는 단일 딕셔너리 모두 수용."""
+        if isinstance(user_criteria, list):
+            return [self._convert_single_simple_criteria(c) for c in user_criteria]
+        return self._convert_single_simple_criteria(user_criteria)
+
+    def _convert_single_simple_criteria(self, user_input):
+        """단일 기준 변환."""
+        def safe_str(value, default=''):
+            try:
+                if pd.isna(value):
+                    return default
+            except (TypeError, ValueError):
+                pass
+            return str(value).strip()
+
+        def safe_value(value, default=None):
+            try:
+                if pd.isna(value):
+                    return default
+            except (TypeError, ValueError):
+                pass
+            return value
+
+        account = safe_str(user_input.get('account', ''))
+        user_x_value = safe_value(user_input.get('xValue'))
+        user_x_compare = safe_str(user_input.get('xCompare', ''))
+        user_include = safe_str(user_input.get('include', ''))
+
+        if account not in self.ACCOUNT_CONFIG:
+            logger.warning("알 수 없는 Account '%s'. 건너뜁니다.", account)
+            return None
+
+        account_config = self.ACCOUNT_CONFIG[account].copy()
+
+        account_config['value'] = user_x_value if user_x_value is not None else account_config.get('default_value', 0)
+
+        if user_x_compare:
+            mapped_compare = self.COMPARISON_MAPPING.get(user_x_compare)
+            if mapped_compare:
+                account_config['condition_type'] = mapped_compare
+
+        if user_include:
+            mapped_include = self.INCLUDE_MAPPING.get(user_include)
+            if mapped_include is not None:
+                account_config['include'] = mapped_include
+        else:
+            account_config['include'] = account_config.get('default_include', True)
+
+        account_config.pop('default_value', None)
+        account_config.pop('default_include', None)
+        return account_config
+
+    def load_criteria_from_excel(self, excel_path, sheet_name="컨트롤시트"):
+        """엑셀 컨트롤시트에서 기준 정보를 읽어 config 리스트로 변환."""
+        try:
+            df = pd.read_excel(excel_path, sheet_name=sheet_name)
+        except Exception as e:
+            logger.error("컨트롤시트를 읽는 중 오류 발생: %s", e)
+            return []
+
+        if 'account' not in df.columns:
+            logger.error("컨트롤시트에 'account' 컬럼이 없습니다.")
+            return []
+
+        required_columns = ['account']
+        optional_columns = ['xValue', 'xCompare', 'include']
+        df = df.dropna(subset=['account'], how='all')
+        available_columns = [col for col in required_columns + optional_columns if col in df.columns]
+        user_criteria_list = df[available_columns].to_dict('records')
+
+        converted_configs = [
+            config for criteria in user_criteria_list
+            if (config := self._convert_single_simple_criteria(criteria)) is not None
+        ]
+        logger.info("컨트롤시트에서 %d개 기준을 읽어왔습니다.", len(converted_configs))
+        return converted_configs
 
 
 def main_processor(payload):
