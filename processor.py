@@ -1,8 +1,12 @@
+import logging
+import os
+
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-import os
+
+logger = logging.getLogger(__name__)
 
 # --- 상수 및 기본 설정 ---
 BASE_ORDERED_COLUMNS_PREFIX = [
@@ -401,47 +405,18 @@ class CriteriaFormulaGenerator:
         
         return formula
     
-    def generate_wa3_numeric_criteria(self, ratio_name, condition_type, threshold, row_number, 
+    def generate_wa3_numeric_criteria(self, ratio_name, condition_type, threshold, row_number,
                                include=True, use_threshold_cell=False, criteria_index=None):
-        """
-        비율 기준 수식 생성 (WA3 탭 데이터 사용)
-        
-        Parameters:
-        - ratio_name: 비율명 (예: "연구개발비/매출액", "무형자산/총자산")
-        - condition_type: 조건 타입 ("gt", "gte", "lt", "lte", "eq")
-        - threshold: 기준값 (예: 0.03 = 3%)
-        - row_number: 행 번호
-        - include: True면 조건 충족시 포함(Yes), False면 제외(No)
-        - use_threshold_cell: True면 기준값을 셀 참조로 사용
-        - criteria_index: threshold 셀 위치 계산용 기준 인덱스
-        """
-        result = "Yes" if include else "No"
-        opposite = "No" if include else "Yes"
-        
-        col = self._get_wa3_column(ratio_name, row_number)
-        
-        if not col:
-            return f'="{opposite}"  # Error: Ratio not found'
-        
-        # threshold 값 결정
-        if use_threshold_cell and criteria_index is not None:
-            threshold_ref = self._get_criteria_threshold_cell(criteria_index)
-        else:
-            threshold_ref = str(threshold)
-        
-        operators = {
-            "gt": ">",
-            "gte": ">=",
-            "lt": "<",
-            "lte": "<=",
-            "eq": "="
-        }
-        
-        op = operators.get(condition_type, ">")
-        
-        formula = f'=IFERROR(IF({col}{op}{threshold_ref},"{result}","{opposite}"),"{opposite}")'
-        
-        return formula
+        """generate_ratio_criteria와 동일 — 위임."""
+        return self.generate_ratio_criteria(
+            ratio_name=ratio_name,
+            condition_type=condition_type,
+            threshold=threshold,
+            row_number=row_number,
+            include=include,
+            use_threshold_cell=use_threshold_cell,
+            criteria_index=criteria_index
+        )
 
 class Analysis:
     def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path="", criteria_list=None, output_path=None):
@@ -768,7 +743,7 @@ class Analysis:
 
     def _populate_raw_data_from_excel(self):
         if not self.data_path:
-            print("Error: data_path가 설정되지 않았습니다. Excel 파일 경로를 지정해주세요.")
+            logger.error("data_path가 설정되지 않았습니다. Excel 파일 경로를 지정해주세요.")
             return
 
         try:
@@ -779,10 +754,10 @@ class Analysis:
                 header=0
             )
         except FileNotFoundError:
-            print(f"Error: 파일 '{self.data_path}'을(를) 찾을 수 없습니다.")
+            logger.error("파일 '%s'을(를) 찾을 수 없습니다.", self.data_path)
             return
         except Exception as e:
-            print(f"Error: Excel 파일을 읽는 중 오류 발생: {e}")
+            logger.error("Excel 파일을 읽는 중 오류 발생: %s", e)
             return
 
         # =========================
@@ -820,10 +795,7 @@ class Analysis:
                         column=sheet_col_num
                     ).value = value
             else:
-                print(
-                    f"Warning: 원본 Excel 파일 '{self.data_path}'의 Results 시트에 "
-                    f"'{target_col_name}' 컬럼이 없습니다."
-                )
+                logger.warning("원본 Excel 파일 '%s'의 Results 시트에 '%s' 컬럼이 없습니다.", self.data_path, target_col_name)
 
     def create_format(self):
         self._set_basic_info()
@@ -1094,11 +1066,11 @@ class Analysis:
           }
         """
         if not criteria_configs:
-            print("Warning: 양적기준 설정이 비어있습니다.")
+            logger.warning("양적기준 설정이 비어있습니다.")
             return
-        
+
         if len(criteria_configs) > self.number_of_criteria:
-            print(f"Warning: 설정된 기준({len(criteria_configs)})이 number_of_criteria({self.number_of_criteria})보다 많습니다.")
+            logger.warning("설정된 기준(%d)이 number_of_criteria(%d)보다 많습니다.", len(criteria_configs), self.number_of_criteria)
             criteria_configs = criteria_configs[:self.number_of_criteria]
         
         # 데이터 시작 행 (헤더 3줄 아래)
@@ -1106,16 +1078,14 @@ class Analysis:
         
         # Raw 데이터가 있는 경우에만 수식 적용
         if self.ws.max_row < data_start_row:
-            print("Warning: Raw 데이터가 없습니다. 먼저 _populate_raw_data_from_excel()을 실행하세요.")
+            logger.warning("Raw 데이터가 없습니다. 먼저 _populate_raw_data_from_excel()을 실행하세요.")
             return
         
-        # 각 기준에 대해 수식 생성 및 적용
         # 각 기준에 대해 수식 생성 및 적용
         for criteria_idx, config in enumerate(criteria_configs):
             if config is None:
                 continue
 
-            criteria_col = self.quantitative_start_col + criteria_idx
             criteria_col = self.quantitative_start_col + criteria_idx
             
             # 각 데이터 행에 수식 적용
@@ -1127,7 +1097,7 @@ class Analysis:
         # 양적통과 컬럼 (모든 기준을 통과한 경우만 Yes)
         self._apply_quantitative_pass_formula(data_start_row)
         
-        print(f"양적기준 수식 적용 완료: {len(criteria_configs)}개 기준, {self.ws.max_row - data_start_row + 1}개 행")
+        logger.info("양적기준 수식 적용 완료: %d개 기준, %d개 행", len(criteria_configs), self.ws.max_row - data_start_row + 1)
     
     def _generate_formula_from_config(self, config, row_number, criteria_index):
         """설정 딕셔너리로부터 수식을 생성합니다."""
@@ -1273,7 +1243,7 @@ class Analysis:
                     for row in range(data_start_row, max_row + 1):
                         self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
         except Exception as e:
-            print(f"Warning: Raw Data 서식 적용 중 오류 발생: {e}")
+            logger.warning("Raw Data 서식 적용 중 오류 발생: %s", e)
 
         # 5. Flow (Accounting)
         # Flow 시작부터 max_formatted_col까지 (Flow가 마지막 부분이라 가정)
@@ -1391,20 +1361,18 @@ class Analysis:
                 
         try:
             self.wb.save(filepath)
-            print(f"파일 저장 완료: {filepath}")
-            
+            logger.info("파일 저장 완료: %s", filepath)
+
         except PermissionError:
-            print(f"Error: 파일 저장 실패 (권한 거부). '{filepath}' 파일이 열려있는지 확인하세요.")
+            logger.error("파일 저장 실패 (권한 거부): '%s'", filepath)
             raise PermissionError(f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요.")
-            
+
         except Exception as e:
-            print(f"파일 저장 실패: {e}")
-            raise e
+            logger.error("파일 저장 실패: %s", e)
+            raise
 
 
 
-import pandas as pd
-from openpyxl.utils import get_column_letter
 class SimpleUserInputConverter:
    """
    단순화된 사용자 입력 변환 클래스
@@ -1627,7 +1595,7 @@ class SimpleUserInputConverter:
        user_include = safe_str(user_input.get('include', ''))
        # Account 설정 가져오기
        if account not in self.ACCOUNT_CONFIG:
-           print(f"Warning: 알 수 없는 Account '{account}'. 건너뜁니다.")
+           logger.warning("알 수 없는 Account '%s'. 건너뜁니다.", account)
            return None
        account_config = self.ACCOUNT_CONFIG[account].copy()
        # xValue 오버라이드 (사용자가 입력한 경우)
@@ -1665,13 +1633,13 @@ class SimpleUserInputConverter:
        try:
            df = pd.read_excel(excel_path, sheet_name=sheet_name)
        except Exception as e:
-           print(f"Error: 컨트롤시트를 읽는 중 오류 발생: {e}")
+           logger.error("컨트롤시트를 읽는 중 오류 발생: %s", e)
            return []
        # 필요한 컬럼 확인
        required_columns = ['account']
        optional_columns = ['xValue', 'xCompare', 'include']
        if 'account' not in df.columns:
-           print(f"Error: 컨트롤시트에 'account' 컬럼이 없습니다.")
+           logger.error("컨트롤시트에 'account' 컬럼이 없습니다.")
            return []
        # account가 비어있는 행 제거
        df = df.dropna(subset=['account'], how='all')
@@ -1685,7 +1653,7 @@ class SimpleUserInputConverter:
            config = self._convert_single_simple_criteria(criteria)
            if config is not None:  # None이 아닌 것만 추가
                converted_configs.append(config)
-       print(f"✓ 컨트롤시트에서 {len(converted_configs)}개 기준을 읽어왔습니다.")
+       logger.info("컨트롤시트에서 %d개 기준을 읽어왔습니다.", len(converted_configs))
        return converted_configs
 
 

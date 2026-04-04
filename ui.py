@@ -1,9 +1,12 @@
 # ui.py
+import logging
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import subprocess
-import json
+
 from preset import PRESET
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class QuantitativeUI:
@@ -50,9 +53,6 @@ class QuantitativeUI:
         ttk.Button(frame, text="Raw 파일 선택", command=self.select_file).grid(row=1, column=0, pady=5)
         self.file_label = ttk.Label(frame, text="선택된 파일 없음")
         self.file_label.grid(row=1, column=1, sticky="w")
-
-        self.file_label = ttk.Label(frame, text="선택된 파일 없음")
-        self.file_label.grid(row=1, column=1, sticky="w")
         
         # 저장 경로 선택 UI 제거됨 (자동 지정)
 
@@ -89,8 +89,6 @@ class QuantitativeUI:
             filetypes=[("Excel files", "*.xlsx *.xls")]
         )
         if self.file_path:
-            self.file_label.config(text=self.file_path)
-
             self.file_label.config(text=self.file_path)
 
     # Output directory selection is removed as per requirements.
@@ -230,6 +228,10 @@ class QuantitativeUI:
             messagebox.showerror("입력 오류", "연도는 숫자로 입력해야 합니다.")
             return
 
+        if year_from > year_to:
+            messagebox.showerror("입력 오류", "시작연도는 종료연도보다 클 수 없습니다.")
+            return
+
         input_data = {
             "corpName": corp_name,
             "targetCorp": target_corp,
@@ -246,12 +248,26 @@ class QuantitativeUI:
 
         for idx, row in enumerate(self.rows, start=1):
             account = row["account"].get()
-            x_value = row["xValue"].get()
+            x_value = row["xValue"].get().strip()
             x_compare = row["xCompare"].get()
-            include = row["include"].get() == "포함"
+            include_str = row["include"].get()
 
             if not account:
                 continue  # 계정 선택 안 된 row는 무시
+
+            if not x_compare:
+                messagebox.showerror("입력 오류", f"기준 {idx}: X비교 값을 선택해주세요.")
+                return
+
+            if x_compare not in ("존재함",) and not x_value:
+                messagebox.showerror("입력 오류", f"기준 {idx}: X값을 입력해주세요.")
+                return
+
+            if not include_str:
+                messagebox.showerror("입력 오류", f"기준 {idx}: 포함/제외를 선택해주세요.")
+                return
+
+            include = include_str == "포함"
 
             criteria_list.append({
                 "seq": idx,
@@ -273,7 +289,7 @@ class QuantitativeUI:
             "criteriaList": criteria_list
         }
     
-        print(payload)
+        logger.info("변환 실행: %s", payload)
 
         try:
             from processor import main_processor
@@ -282,5 +298,6 @@ class QuantitativeUI:
         except PermissionError as pe:
             messagebox.showerror("저장 오류", str(pe))
         except Exception as e:
+            logger.exception("변환 중 오류 발생")
             messagebox.showerror("오류", f"작업 중 오류가 발생했습니다:\n{e}")
 
