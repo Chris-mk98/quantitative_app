@@ -814,6 +814,14 @@ class Analysis:
 
     def insert_formular(self):
         """수식을 동적으로 생성하여 삽입합니다."""
+        self._insert_flow_formulas()
+        self._insert_pl_formulas()
+        self._insert_ratio_formulas()
+        self._insert_unadjusted_formulas()
+        self._insert_reference_formulas()
+
+    def _insert_flow_formulas(self):
+        """자산 Flow 탭 수식 삽입 (기초/기말 평균 및 가중평균)."""
         asset_list = [
             "Debtors\nth USD ",
             "Creditors\nth USD ",
@@ -822,41 +830,45 @@ class Analysis:
             "Tangible fixed assets\nth USD ",
             "Total assets\nth USD "
         ]
-        
+        # WA3 탭에 복사할 자산 → wa3 컬럼 오프셋 매핑
+        wa3_offset = {"Stock": 3, "Intangible": 5, "Tangible": 6, "Total": 7}
+
         col_name = {}
         for asset in asset_list:
-            for year in range(self.start_year-1, self.end_year+1):
-                col_name[asset+str(year)] = self.raw_col_alphabet[asset+str(year)]
-        
+            for year in range(self.start_year - 1, self.end_year + 1):
+                col_name[asset + str(year)] = self.raw_col_alphabet[asset + str(year)]
+
         num_flow_cols = self.num_years + 1
-        
-        for asset in asset_list:
-            asset_idx = asset_list.index(asset)
-            
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
+
+        for asset_idx, asset in enumerate(asset_list):
             for year_idx in range(self.num_years):
                 col = self.flow_start_col + asset_idx * num_flow_cols + year_idx
-                for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                    cell = self.ws.cell(row=row, column=col)
-                    prev_year = self.start_year - 1 + year_idx
-                    curr_year = self.start_year + year_idx
-                    cell.value = f"=IFERROR(SUM({col_name[asset+str(prev_year)]}{row}:{col_name[asset+str(curr_year)]}{row})/2,0)"
-            
+                prev_year = self.start_year - 1 + year_idx
+                curr_year = self.start_year + year_idx
+                for row in data_rows:
+                    self.ws.cell(row=row, column=col).value = (
+                        f"=IFERROR(SUM({col_name[asset+str(prev_year)]}{row}:"
+                        f"{col_name[asset+str(curr_year)]}{row})/2,0)"
+                    )
+
             wa_col = self.flow_start_col + asset_idx * num_flow_cols + self.num_years
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=wa_col)
-                start_col_letter = get_column_letter(wa_col - self.num_years)
-                end_col_letter = get_column_letter(wa_col - 1)
-                cell.value = f"=IFERROR(SUM({start_col_letter}{row}:{end_col_letter}{row})/{self.num_years},0)"
-                
-                if "Stock" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+3).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Intangible" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+5).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Tangible" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+6).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Total" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+7).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-        
+            start_wa = get_column_letter(wa_col - self.num_years)
+            end_wa = get_column_letter(wa_col - 1)
+            for row in data_rows:
+                self.ws.cell(row=row, column=wa_col).value = (
+                    f"=IFERROR(SUM({start_wa}{row}:{end_wa}{row})/{self.num_years},0)"
+                )
+                wa_col_letter = get_column_letter(wa_col)
+                for keyword, offset in wa3_offset.items():
+                    if keyword in asset:
+                        self.ws.cell(row=row, column=self.wa3_start_col + offset).value = (
+                            f"=IFERROR({wa_col_letter}{row},0)"
+                        )
+                        break
+
+    def _insert_pl_formulas(self):
+        """P&L 항목 WA3(기간 평균) 수식 삽입."""
         pl_list = {
             f"Operating revenue (Turnover)\nth USD {self.start_year}": 0,
             f"Operating profit (loss) [EBIT]\nth USD {self.start_year}": 1,
@@ -865,130 +877,131 @@ class Analysis:
             f"Costs of goods sold\nth USD {self.start_year}": 8,
             f"Number of employees\n{self.start_year}": 9,
         }
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
 
         for pl, col_idx in pl_list.items():
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=self.wa3_start_col + col_idx)
-                start_col = self.raw_col_number[pl]
-                end_col = start_col + self.num_years - 1
-                cell.value = f"=IFERROR(SUM({get_column_letter(start_col)}{row}:{get_column_letter(end_col)}{row})/{self.num_years},0)"
-        
-        ratio_idx = {1:(4,0), 2:(2,0), 3:(5,7), 4:(6,7), 5:(3,7), 6:(3,8)}
+            start_col = self.raw_col_number[pl]
+            end_col = start_col + self.num_years - 1
+            for row in data_rows:
+                self.ws.cell(row=row, column=self.wa3_start_col + col_idx).value = (
+                    f"=IFERROR(SUM({get_column_letter(start_col)}{row}:"
+                    f"{get_column_letter(end_col)}{row})/{self.num_years},0)"
+                )
+
+    def _insert_ratio_formulas(self):
+        """WA3 비율 수식 삽입 (연구개발비율, 영업비용율 등)."""
+        # (numerator_offset, denominator_offset) — wa3_start_col 기준
+        ratio_idx = {1: (4, 0), 2: (2, 0), 3: (5, 7), 4: (6, 7), 5: (3, 7), 6: (3, 8)}
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
 
         for col_idx, (numerator, denominator) in ratio_idx.items():
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+            num_col = get_column_letter(self.wa3_start_col + numerator)
+            den_col = get_column_letter(self.wa3_start_col + denominator)
+            for row in data_rows:
                 cell = self.ws.cell(row=row, column=self.wa3_start_col + 9 + col_idx)
                 if col_idx == 6:
-                    cell.value = f'=IFERROR(365/({get_column_letter(self.wa3_start_col+denominator)}{row}/{get_column_letter(self.wa3_start_col+numerator)}{row}), "")'
+                    cell.value = f'=IFERROR(365/({den_col}{row}/{num_col}{row}), "")'
                 else:
-                    cell.value = f"=IFERROR({get_column_letter(self.wa3_start_col+numerator)}{row}/{get_column_letter(self.wa3_start_col+denominator)}{row},0)"
+                    cell.value = f"=IFERROR({num_col}{row}/{den_col}{row},0)"
 
+    def _insert_unadjusted_formulas(self):
+        """Unadjusted 지표(OM / MTC / BR) 수식 삽입."""
         num_cols_per_metric = len(self._get_unadj_list())
-        
-        for year_idx in range(self.num_years):
-            col = self.unadjusted_start_col + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
+
+        def _insert_metric(metric_start, yearly_formula_fn, avg_formula_fn):
+            """연도별 수식 + 평균 수식 + MaxMin 수식을 한 번에 삽입."""
+            for year_idx in range(self.num_years):
+                col = metric_start + year_idx
                 year = self.start_year + year_idx
-                op_col = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {year}"]
-                rev_col = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {year}"]
-                cell.value = f"=IFERROR({op_col}{row}/{rev_col}{row},0)"
-        
-        avg_col = self.unadjusted_start_col + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            op_start = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
-            op_end = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
-            rev_start = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
-            rev_end = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({op_start}{row}:{op_end}{row})/SUM({rev_start}{row}:{rev_end}{row}),0)"
-        
-        maxmin_col = self.unadjusted_start_col + self.num_years + 1
-        
-        # 1. BvD ID number & Company name reference
-        # Raw Data의 BvD ID, Name 컬럼 인덱스 (raw_data_start_col, raw_data_start_col+1)
+                for row in data_rows:
+                    self.ws.cell(row=row, column=col).value = yearly_formula_fn(row, year)
+
+            avg_col = metric_start + self.num_years
+            for row in data_rows:
+                self.ws.cell(row=row, column=avg_col).value = avg_formula_fn(row)
+
+            maxmin_col = metric_start + self.num_years + 1
+            start_l = get_column_letter(metric_start)
+            end_l = get_column_letter(metric_start + self.num_years - 1)
+            for row in data_rows:
+                self.ws.cell(row=row, column=maxmin_col).value = (
+                    f"=IFERROR(MAX({start_l}{row}:{end_l}{row})-MIN({start_l}{row}:{end_l}{row}),0)"
+                )
+
+        # OM
+        om_start = self.unadjusted_start_col
+        op_start_l = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
+        op_end_l = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
+        rev_start_l = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
+        rev_end_l = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
+
+        _insert_metric(
+            om_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}"
+                f"/{self.raw_col_alphabet[f'Operating revenue (Turnover)\\nth USD {year}']}{row},0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({op_start_l}{row}:{op_end_l}{row})"
+                f"/SUM({rev_start_l}{row}:{rev_end_l}{row}),0)"
+            ),
+        )
+
+        # MTC
+        mtc_start = self.unadjusted_start_col + num_cols_per_metric
+        _insert_metric(
+            mtc_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}"
+                f"/({self.raw_col_alphabet[f'Operating revenue (Turnover)\\nth USD {year}']}{row}"
+                f"-{self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}),0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({op_start_l}{row}:{op_end_l}{row})"
+                f"/(SUM({rev_start_l}{row}:{rev_end_l}{row})"
+                f"-SUM({op_start_l}{row}:{op_end_l}{row})),0)"
+            ),
+        )
+
+        # BR
+        br_start = self.unadjusted_start_col + num_cols_per_metric * 2
+        gp_start_l = self.raw_col_alphabet[f"Gross profit\nth USD {self.start_year}"]
+        gp_end_l = self.raw_col_alphabet[f"Gross profit\nth USD {self.end_year}"]
+        opex_start_l = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.start_year}"]
+        opex_end_l = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.end_year}"]
+
+        _insert_metric(
+            br_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Gross profit\\nth USD {year}']}{row}"
+                f"/{self.raw_col_alphabet[f'Other operating expense (income)\\nth USD {year}']}{row},0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({gp_start_l}{row}:{gp_end_l}{row})"
+                f"/SUM({opex_start_l}{row}:{opex_end_l}{row}),0)"
+            ),
+        )
+
+    def _insert_reference_formulas(self):
+        """BvD ID / 회사명 / 질적기준 참조 수식 삽입."""
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
         raw_bvd_col = get_column_letter(self.raw_data_start_col)
         raw_name_col = get_column_letter(self.raw_data_start_col + 1)
-        
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            # BvD ID (Col 2)
+
+        for row in data_rows:
             self.ws.cell(row=row, column=2).value = f"={raw_bvd_col}{row}"
-            # Company Name (Col 3)
             self.ws.cell(row=row, column=3).value = f"={raw_name_col}{row}"
 
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(self.unadjusted_start_col)
-            end_letter = get_column_letter(self.unadjusted_start_col + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-        
-        mtc_start = self.unadjusted_start_col + num_cols_per_metric
-        for year_idx in range(self.num_years):
-            col = mtc_start + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
-                year = self.start_year + year_idx
-                op_col = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {year}"]
-                rev_col = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {year}"]
-                cell.value = f"=IFERROR({op_col}{row}/({rev_col}{row}-{op_col}{row}),0)"
-        
-        avg_col = mtc_start + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            op_start = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
-            op_end = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
-            rev_start = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
-            rev_end = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({op_start}{row}:{op_end}{row})/(SUM({rev_start}{row}:{rev_end}{row})-SUM({op_start}{row}:{op_end}{row})),0)"
-        
-        maxmin_col = mtc_start + self.num_years + 1
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(mtc_start)
-            end_letter = get_column_letter(mtc_start + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-        
-        br_start = self.unadjusted_start_col + num_cols_per_metric * 2
-        for year_idx in range(self.num_years):
-            col = br_start + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
-                year = self.start_year + year_idx
-                gp_col = self.raw_col_alphabet[f"Gross profit\nth USD {year}"]
-                opex_col = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {year}"]
-                cell.value = f"=IFERROR({gp_col}{row}/{opex_col}{row},0)"
-        
-        avg_col = br_start + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            gp_start = self.raw_col_alphabet[f"Gross profit\nth USD {self.start_year}"]
-            gp_end = self.raw_col_alphabet[f"Gross profit\nth USD {self.end_year}"]
-            opex_start = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.start_year}"]
-            opex_end = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({gp_start}{row}:{gp_end}{row})/SUM({opex_start}{row}:{opex_end}{row}),0)"
-        
-        maxmin_col = br_start + self.num_years + 1
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(br_start)
-            end_letter = get_column_letter(br_start + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-
-        # --- Qualitative Reference Formulas ---
         qual_start = self.qualitative_start_col
-        # Column 1: DB Description -> Primary business line
         pbl_col = self.raw_col_alphabet["Primary business line"]
-        # Column 2: Full Overview -> Full overview
         fo_col = self.raw_col_alphabet["Full overview"]
-        # Column 3: Main activity -> Main activity
         ma_col = self.raw_col_alphabet["Main activity"]
-        # Column 4: Main Products and Services -> Main products and services
         mps_col = self.raw_col_alphabet["Main products and services"]
-        # Column 5: US-SIC -> US SIC code & " - " & US SIC description
         sic_col = self.raw_col_alphabet["US SIC, primary code(s)"]
         sic_desc_col = self.raw_col_alphabet["US SIC, primary code(s) - description"]
 
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+        for row in data_rows:
             self.ws.cell(row=row, column=qual_start).value = f"={pbl_col}{row}"
             self.ws.cell(row=row, column=qual_start + 1).value = f"={fo_col}{row}"
             self.ws.cell(row=row, column=qual_start + 2).value = f"={ma_col}{row}"
@@ -1176,158 +1189,92 @@ class Analysis:
             cell.value = formula
 
     def apply_final_styles(self):
-        """
-        최종적으로 서식을 적용합니다.
-        1. Unadjusted, WA3(Ratio): 0.00%
-        2. WA3(Metrics), Raw Data(Turnover~), Flow: Accounting Format
-        3. All Borders
-        """
+        """최종 서식을 적용합니다."""
         ACCOUNTING_FORMAT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)'
         PERCENTAGE_FORMAT = '0.00%'
-        
-        # 데이터 영역 (헤더 제외)
+
+        flow_total_cols = 6 * (self.num_years + 1)  # 6개 자산 × (연도 + WA열)
+        final_max_col = max(self.max_formatted_col, self.flow_start_col + flow_total_cols - 1)
+
         data_start_row = self.qualitative_start_row + 3
         max_row = self.ws.max_row
-        max_col = self.max_formatted_col
-        
-        # 1. Unadjusted (Percentage)
+
+        self._apply_number_formats(data_start_row, max_row, ACCOUNTING_FORMAT, PERCENTAGE_FORMAT, flow_total_cols)
+        self._apply_borders(max_row, final_max_col)
+        self._apply_header_alignment(final_max_col)
+        self._apply_column_widths(data_start_row, max_row, final_max_col)
+
+    def _apply_number_formats(self, data_start_row, max_row, accounting_fmt, percentage_fmt, flow_total_cols):
+        """숫자 포맷 적용 (Unadjusted %, WA3 Accounting/%, Raw Accounting, Flow Accounting)."""
+        # 1. Unadjusted → 퍼센트
         for col in range(self.unadjusted_start_col, self.unadjusted_start_col + self.unadjusted_num_cols):
             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = PERCENTAGE_FORMAT
-                
-        # 2. WA3 Metrics (Accounting)
-        # 종업원수 포함하려면 wa3_list 전체 적용
+                self.ws.cell(row=row, column=col).number_format = percentage_fmt
+
+        # 2. WA3 지표 → Accounting
         wa3_metrics_count = len(self._get_wa3_list())
         for col in range(self.wa3_start_col, self.wa3_start_col + wa3_metrics_count):
             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+                self.ws.cell(row=row, column=col).number_format = accounting_fmt
 
-        # 3. WA3 Ratios (Percentage)
-        wa3_ratios_count = len(self._get_ratio_tab_list())
+        # 3. WA3 비율 → 퍼센트 (재고자산보유일수는 Accounting)
         ratio_start_col = self.wa3_start_col + wa3_metrics_count
-        ratio_list = self._get_ratio_tab_list()
-        
-        for idx, ratio_name in enumerate(ratio_list):
+        for idx, ratio_name in enumerate(self._get_ratio_tab_list()):
+            fmt = accounting_fmt if "재고자산보유일수" in ratio_name else percentage_fmt
             col = ratio_start_col + idx
-            # "재고자산보유일수"가 포함된 경우 Accounting Format 적용
-            if "재고자산보유일수" in ratio_name:
-                fmt = ACCOUNTING_FORMAT
-            else:
-                fmt = PERCENTAGE_FORMAT
-                
             for row in range(data_start_row, max_row + 1):
                 self.ws.cell(row=row, column=col).number_format = fmt
-                
-        # 4. Raw Data (Accounting from Turnover)
-        # Turnover 컬럼 인덱스 찾기
-        turnover_col_name = f"Operating revenue (Turnover)\nth USD "
-        # ordered_columns에서 Turnover의 인덱스 확인
+
+        # 4. Raw Data (Turnover 이후) → Accounting
         try:
-            # Turnover가 포함된 첫 컬럼 인덱스를 찾음 (년도별 컬럼 중 첫번째)
-            # 여기서는 ordered_columns에 'Operating revenue (Turnover)\nth USD 2021' 처럼 년도가 붙어있으므로
-            # 기본 prefix로 검색
-            
-            # Turnover가 시작되는 첫 컬럼 찾기
-            turnover_start_index = -1
-            for idx, col_name in enumerate(self.ordered_columns):
-                if "Operating revenue (Turnover)" in col_name:
-                    turnover_start_index = idx
-                    break
-            
-            if turnover_start_index != -1:
+            turnover_start_index = next(
+                (i for i, name in enumerate(self.ordered_columns) if "Operating revenue (Turnover)" in name),
+                None
+            )
+            if turnover_start_index is not None:
                 abs_turnover_col = self.raw_data_start_col + turnover_start_index
-                # Raw Data 끝까지 적용
                 raw_data_end_col = self.raw_data_start_col + len(self.ordered_columns)
-                
                 for col in range(abs_turnover_col, raw_data_end_col):
                     for row in range(data_start_row, max_row + 1):
-                        self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+                        self.ws.cell(row=row, column=col).number_format = accounting_fmt
         except Exception as e:
             logger.warning("Raw Data 서식 적용 중 오류 발생: %s", e)
 
-        # 5. Flow (Accounting)
-        # Flow 시작부터 max_formatted_col까지 (Flow가 마지막 부분이라 가정)
-        # 정확히는 flow_start_col 부터 flow 끝까지
-        flow_list = ["매출채권 (Flow)", "매입채무 (Flow)", "재고자산 (Flow)", "무형자산 (Flow)", "유형자산 (Flow)", "총자산 (Flow)"]
-        num_flow_cols = self.num_years + 1
-        total_flow_cols = len(flow_list) * num_flow_cols
-        
-        for col in range(self.flow_start_col, self.flow_start_col + total_flow_cols):
-             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
-        
-        # 6. All Borders
-        # 전체 테이블 범위: qualitative_start_row 부터 max_row, 1부터 max_col
-        # max_formatted_col이 정확하지 않을 수 있으므로 max_col 재계산
-        final_max_col = max(self.max_formatted_col, self.flow_start_col + total_flow_cols - 1)
-        
+        # 5. Flow → Accounting
+        for col in range(self.flow_start_col, self.flow_start_col + flow_total_cols):
+            for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = accounting_fmt
+
+    def _apply_borders(self, max_row, final_max_col):
+        """전체 테이블에 테두리 적용 (Final Selection ~ Unadjusted 사이 빈 열 제외)."""
         for row in range(self.qualitative_start_row, max_row + 1):
             for col in range(1, final_max_col + 1):
-                # Skip and clear borders for empty columns between Final Selection and Unadjusted
                 if self.final_selection_start_col < col < self.unadjusted_start_col:
                     self.ws.cell(row=row, column=col).border = Border()
-                    continue
-                    
-                cell = self.ws.cell(row=row, column=col)
-                cell.border = THIN_BORDER
-        
-        # 7. Wrap Text (Row 26, 27, 28 approx -> quantitative_start_row ~ +2)
-        # qualitative_start_row가 헤더 시작점임
+                else:
+                    self.ws.cell(row=row, column=col).border = THIN_BORDER
+
+    def _apply_header_alignment(self, final_max_col):
+        """헤더 3행에 중앙 정렬 + 줄바꿈 적용."""
         header_start_row = self.qualitative_start_row
         for r in range(header_start_row, header_start_row + 3):
             for c in range(1, final_max_col + 1):
-                self.ws.cell(row=r, column=c).alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
+                self.ws.cell(row=r, column=c).alignment = Alignment(
+                    wrap_text=True, horizontal='center', vertical='center'
+                )
 
-        # 8. Autofit (Unadjusted ~ End)
-        # self.unadjusted_start_col 부터 final_max_col까지
+    def _apply_column_widths(self, data_start_row, max_row, final_max_col):
+        """헤더 텍스트 길이 기준으로 컬럼 너비 설정 (Unadjusted 이후)."""
+        header_start_row = self.qualitative_start_row
         for col_idx in range(self.unadjusted_start_col, final_max_col + 1):
-            col_letter = get_column_letter(col_idx)
             max_len = 0
-            
-            # 헤더 확인
             for r in range(header_start_row, header_start_row + 3):
                 val = self.ws.cell(row=r, column=col_idx).value
                 if val:
-                    # 줄바꿈이 있으면 가장 긴 줄 기준
-                    lines = str(val).split('\n')
-                    for line in lines:
-                        max_len = max(max_len, len(str(line)))
-            
-            # 데이터 확인 (너무 많으면 샘플링 or 전체)
-            # 여기선 전체 확인하되 50글자 제한
-            # 엑셀 폭 계산은 대략 글자수 * 1.2 정도?
-            # 숫자는 길이가 짧아도 너비가 필요할 수 있음
-             
-            # 이번 요청에서는 "컬럼너비를 Autofit"이라고 했으므로
-            # openpyxl로 best effort 추정
-            
-            # 데이터는 제외하고 헤더 기준으로만 하거나, 데이터도 일부 포함
-            # Accounting format 등은 길이가 길어질 수 있음
-            # 간단히 헤더 길이 + 여유분 or 데이터 길이 고려
-            
-            # (데이터 전체 순회는 느릴 수 있으니 상위 100개만 체크)
-            check_limit = min(max_row, data_start_row + 100)
-            for r in range(data_start_row, check_limit):
-                val = self.ws.cell(row=r, column=col_idx).value
-                if val is not None:
-                    # 수식이면 결과값을 알기 어려우므로 pass하거나 추정
-                    # 여기서는 그냥 pass (값 읽기가 어려움)
-                    pass
+                    max_len = max(max_len, max(len(line) for line in str(val).split('\n')))
 
-            # 단순히 max_len (헤더 기준) + 여유분 2
-            # 하지만 Wrapping이 되어있으므로 너비를 너무 넓히면 Wrapping의 의미가 퇴색됨
-            # 보통 Wrapping을 하면 너비를 고정하고 높이를 늘리지만,
-            # 여기서는 "Autofit"을 요청했으므로, 텍스트가 안 잘리게 너비를 늘려달라는 의미일 수 있음.
-            # 하지만 Wrap text + Autofit은 상충됨 (Autofit하면 한 줄이 됨).
-            # "Wrap text 옵션 적용 후 ... Autofit" -> Wrap을 유지하면서 적절한 너비?
-            # 아마도 '적당한 너비'를 원할 것 같음. 
-            # 일단 헤더의 max line length + 4 정도로 설정
-            
-            format_width = max_len + 4
-            if format_width < 10: format_width = 10
-            if format_width > 50: format_width = 50 # 너무 넓지 않게
-            
-            self.ws.column_dimensions[col_letter].width = format_width
+            width = max(10, min(50, max_len + 4))
+            self.ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     def save_file(self):
         # Naming Rule: [Company]_QuantitativeAnalysis_[Period].xlsx
@@ -1343,7 +1290,8 @@ class Analysis:
         if self.output_path:
             target_dir = self.output_path
         else:
-            target_dir = os.getcwd() # Should generally not happen given UI logic
+            target_dir = os.getcwd()
+            logger.warning("output_path가 설정되지 않아 현재 디렉토리에 저장합니다: %s", target_dir)
             
         filepath = os.path.join(target_dir, base_filename)
         
