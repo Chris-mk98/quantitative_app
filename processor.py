@@ -1521,53 +1521,116 @@ class SimpleUserInputConverter:
         return converted_configs
 
 
+class DirectCriteriaConverter:
+    """UI 자유형식 입력을 CriteriaFormulaGenerator용 config dict로 직접 변환."""
+
+    def __init__(self, start_year: int, end_year: int):
+        self.start_year = start_year
+        self.end_year = end_year
+
+    def convert(self, criteria_list: list) -> list:
+        result = []
+        for row in criteria_list:
+            converted = self._convert_one(row)
+            if converted is not None:
+                result.append(converted)
+        return result
+
+    def _convert_one(self, row: dict) -> dict | None:
+        from criteria_config import (
+            CRITERIA_TYPES, NUMERIC_OPERATORS, TEXT_OPERATORS,
+            COUNT_REQUIREMENT_MAPPING,
+        )
+
+        type_key    = row.get("type", "").strip()
+        account_kor = row.get("account", "").strip()
+        x_value     = row.get("xValue", "").strip()
+        x_compare   = row.get("xCompare", "").strip()
+        year_cond   = row.get("yearCondition", "")
+        n_years_str = row.get("nYears", "")
+        include     = row.get("include", True)
+
+        if type_key not in CRITERIA_TYPES:
+            logger.warning("알 수 없는 유형: %s", type_key)
+            return None
+        accounts_map = CRITERIA_TYPES[type_key]["accounts"]
+        if account_kor not in accounts_map:
+            logger.warning("유형 '%s'에 계정 '%s' 없음", type_key, account_kor)
+            return None
+        field_val = accounts_map[account_kor]
+
+        # 데이터가용성
+        if type_key == "데이터가용성":
+            return {"type": "data_availability", "field_names": field_val, "include": include}
+
+        # 연산자 매핑
+        op_map = TEXT_OPERATORS if type_key == "텍스트" else NUMERIC_OPERATORS
+        condition_type = op_map.get(x_compare)
+        if not condition_type:
+            logger.warning("알 수 없는 연산자: %s", x_compare)
+            return None
+
+        # 기준값 파싱
+        if type_key == "텍스트":
+            parsed_value = x_value
+        else:
+            try:
+                parsed_value = float(x_value) if x_value else 0.0
+            except ValueError:
+                logger.warning("기준값 파싱 실패: %s", x_value)
+                return None
+
+        internal_type = {
+            "텍스트": "text",
+            "숫자-개별연도": "numeric",
+            "숫자-WA3평균": "wa3",
+            "비율": "ratio",
+        }[type_key]
+
+        config = {
+            "type": internal_type,
+            "field_name": field_val,
+            "condition_type": condition_type,
+            "value": parsed_value,
+            "include": include,
+        }
+
+        # count_requirement (개별연도만)
+        if type_key == "숫자-개별연도":
+            if year_cond == "N개년이상":
+                try:
+                    config["count_requirement"] = int(n_years_str)
+                except (ValueError, TypeError):
+                    logger.warning("N개년 값 파싱 실패: %s", n_years_str)
+                    return None
+            else:
+                config["count_requirement"] = COUNT_REQUIREMENT_MAPPING.get(year_cond, "all")
+
+        return config
+
+
 def main_processor(payload):
-    
-    input_data = payload["inputData"]
+    input_data    = payload["inputData"]
     criteria_list = payload["criteriaList"]
 
-    # input_data = {
-    #     "corpName": corp_name,
-    #     "targetCorp": target_corp,
-    #     "yearFrom": year_from,
-    #     "yearTo": year_to,
-    #     "rawFilePath": self.file_path
-    # }
-    #         criteria_list.append({
-    #     "seq": idx,
-    #     "account": account,
-    #     "xValue": x_value,
-    #     "xCompare": x_compare,
-    #     "include": include
-    # })
-    
-    converter = SimpleUserInputConverter(start_year=input_data["yearFrom"], end_year=input_data["yearTo"])
-    converted = converter.convert_simple_input(criteria_list)
+    converter = DirectCriteriaConverter(input_data["yearFrom"], input_data["yearTo"])
+    converted = converter.convert(criteria_list)
 
     processor = Analysis(
         tested_party=input_data["targetCorp"],
         name=input_data["corpName"],
         start_year=input_data["yearFrom"],
         end_year=input_data["yearTo"],
-        number_of_criteria=len(criteria_list),
+        number_of_criteria=len([c for c in converted if c is not None]),
         data_path=input_data["rawFilePath"],
         criteria_list=criteria_list,
-        output_path=input_data.get("outputDir")
+        output_path=input_data.get("outputDir"),
     )
 
-    # 포맷 생성
     processor.create_format()
-    # Raw 데이터 채우기 (파일이 있다면)
     processor._populate_raw_data_from_excel()
-    # 계산 수식 삽입
     processor.insert_formular()
-
     processor.apply_quantitative_criteria_formulas(converted)
-    
-    # 통과/탈락 요약 수식 (Row 20, 21)
     processor.insert_pass_fail_summary()
-
-    # 최종 서식 적용 (Accounting, %, Border)
     processor.apply_final_styles()
-
     processor.save_file()
