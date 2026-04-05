@@ -1,8 +1,12 @@
+import logging
+import os
+
 import pandas as pd
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 from openpyxl.utils import get_column_letter
-import os
+
+logger = logging.getLogger(__name__)
 
 # --- 상수 및 기본 설정 ---
 BASE_ORDERED_COLUMNS_PREFIX = [
@@ -73,6 +77,12 @@ THIN_BORDER = Border(left=Side(style='thin'),
 
 BOLD_FONT = Font(bold=True)
 CENTER_ALIGN = Alignment(horizontal='center', vertical='center')
+
+
+def _escape_excel_string(value: str) -> str:
+    """Excel 수식 문자열 내 큰따옴표를 이스케이프하여 formula injection을 방지합니다."""
+    return str(value).replace('"', '""')
+
 
 class CriteriaFormulaGenerator:
     """양적기준 수식 생성 클래스"""
@@ -201,62 +211,53 @@ class CriteriaFormulaGenerator:
         """
         result = "Yes" if include else "No"
         opposite = "No" if include else "Yes"
-        
+        safe_value = _escape_excel_string(value)
+
         cols = self._get_column_range(field_name, row_number)
-        
+
         if not cols:
-            return f'="{opposite}"  # Error: Field not found'
-        
+            return f'="{opposite}"'
+
         if condition_type == "blank":
-            # 공란인 경우
             if len(cols) == 1:
                 formula = f'=IF({cols[0]}="","{result}","{opposite}")'
             else:
-                # 모든 연도가 공란인 경우
                 conditions = ",".join([f'{col}=""' for col in cols])
                 formula = f'=IF(AND({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "not_blank":
-            # 비공란인 경우 (데이터가 있는 경우)
             if len(cols) == 1:
                 formula = f'=IF({cols[0]}<>"","{result}","{opposite}")'
             else:
-                # 모든 연도에 데이터가 있는 경우
                 conditions = ",".join([f'{col}<>""' for col in cols])
                 formula = f'=IF(AND({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "equals":
-            # 특정 값과 같은 경우
             if len(cols) == 1:
-                formula = f'=IF({cols[0]}="{value}","{result}","{opposite}")'
+                formula = f'=IF({cols[0]}="{safe_value}","{result}","{opposite}")'
             else:
-                # 한 번이라도 같은 경우
-                conditions = ",".join([f'{col}="{value}"' for col in cols])
+                conditions = ",".join([f'{col}="{safe_value}"' for col in cols])
                 formula = f'=IF(OR({conditions}),"{result}","{opposite}")'
-        
+
         elif condition_type == "all_equals":
-            # 모든 연도에서 특정 값과 같은 경우
             if len(cols) == 1:
-                formula = f'=IF({cols[0]}="{value}","{result}","{opposite}")'
+                formula = f'=IF({cols[0]}="{safe_value}","{result}","{opposite}")'
             else:
-                # COUNTIF 사용 (예: 감사의견 적정)
                 first_col = cols[0].replace(str(row_number), '')
                 last_col = cols[-1].replace(str(row_number), '')
                 range_str = f"${first_col}${row_number}:${last_col}${row_number}"
-                formula = f'=IF(COUNTIF({range_str},"{value}")={len(cols)},"{result}","{opposite}")'
-        
+                formula = f'=IF(COUNTIF({range_str},"{safe_value}")={len(cols)},"{result}","{opposite}")'
+
         elif condition_type == "contains":
-            # 특정 단어를 포함하는 경우
             if len(cols) == 1:
-                formula = f'=IF(ISNUMBER(SEARCH("{value}",{cols[0]})),"{result}","{opposite}")'
+                formula = f'=IF(ISNUMBER(SEARCH("{safe_value}",{cols[0]})),"{result}","{opposite}")'
             else:
-                # 한 번이라도 포함하는 경우
-                conditions = ",".join([f'ISNUMBER(SEARCH("{value}",{col}))' for col in cols])
+                conditions = ",".join([f'ISNUMBER(SEARCH("{safe_value}",{col}))' for col in cols])
                 formula = f'=IF(OR({conditions}),"{result}","{opposite}")'
-        
+
         else:
-            formula = f'="{opposite}"  # Error: Unknown condition type'
-        
+            formula = f'="{opposite}"'
+
         return formula
     
     def generate_numeric_criteria(self, field_name, condition_type, threshold, row_number, 
@@ -401,47 +402,18 @@ class CriteriaFormulaGenerator:
         
         return formula
     
-    def generate_wa3_numeric_criteria(self, ratio_name, condition_type, threshold, row_number, 
+    def generate_wa3_numeric_criteria(self, ratio_name, condition_type, threshold, row_number,
                                include=True, use_threshold_cell=False, criteria_index=None):
-        """
-        비율 기준 수식 생성 (WA3 탭 데이터 사용)
-        
-        Parameters:
-        - ratio_name: 비율명 (예: "연구개발비/매출액", "무형자산/총자산")
-        - condition_type: 조건 타입 ("gt", "gte", "lt", "lte", "eq")
-        - threshold: 기준값 (예: 0.03 = 3%)
-        - row_number: 행 번호
-        - include: True면 조건 충족시 포함(Yes), False면 제외(No)
-        - use_threshold_cell: True면 기준값을 셀 참조로 사용
-        - criteria_index: threshold 셀 위치 계산용 기준 인덱스
-        """
-        result = "Yes" if include else "No"
-        opposite = "No" if include else "Yes"
-        
-        col = self._get_wa3_column(ratio_name, row_number)
-        
-        if not col:
-            return f'="{opposite}"  # Error: Ratio not found'
-        
-        # threshold 값 결정
-        if use_threshold_cell and criteria_index is not None:
-            threshold_ref = self._get_criteria_threshold_cell(criteria_index)
-        else:
-            threshold_ref = str(threshold)
-        
-        operators = {
-            "gt": ">",
-            "gte": ">=",
-            "lt": "<",
-            "lte": "<=",
-            "eq": "="
-        }
-        
-        op = operators.get(condition_type, ">")
-        
-        formula = f'=IFERROR(IF({col}{op}{threshold_ref},"{result}","{opposite}"),"{opposite}")'
-        
-        return formula
+        """generate_ratio_criteria와 동일 — 위임."""
+        return self.generate_ratio_criteria(
+            ratio_name=ratio_name,
+            condition_type=condition_type,
+            threshold=threshold,
+            row_number=row_number,
+            include=include,
+            use_threshold_cell=use_threshold_cell,
+            criteria_index=criteria_index
+        )
 
 class Analysis:
     def __init__(self, tested_party="test", start_year=2021, end_year=2023, name="test", number_of_criteria=5, data_path="", criteria_list=None, output_path=None):
@@ -768,7 +740,7 @@ class Analysis:
 
     def _populate_raw_data_from_excel(self):
         if not self.data_path:
-            print("Error: data_path가 설정되지 않았습니다. Excel 파일 경로를 지정해주세요.")
+            logger.error("data_path가 설정되지 않았습니다. Excel 파일 경로를 지정해주세요.")
             return
 
         try:
@@ -779,10 +751,10 @@ class Analysis:
                 header=0
             )
         except FileNotFoundError:
-            print(f"Error: 파일 '{self.data_path}'을(를) 찾을 수 없습니다.")
+            logger.error("파일 '%s'을(를) 찾을 수 없습니다.", self.data_path)
             return
         except Exception as e:
-            print(f"Error: Excel 파일을 읽는 중 오류 발생: {e}")
+            logger.error("Excel 파일을 읽는 중 오류 발생: %s", e)
             return
 
         # =========================
@@ -820,10 +792,7 @@ class Analysis:
                         column=sheet_col_num
                     ).value = value
             else:
-                print(
-                    f"Warning: 원본 Excel 파일 '{self.data_path}'의 Results 시트에 "
-                    f"'{target_col_name}' 컬럼이 없습니다."
-                )
+                logger.warning("원본 Excel 파일 '%s'의 Results 시트에 '%s' 컬럼이 없습니다.", self.data_path, target_col_name)
 
     def create_format(self):
         self._set_basic_info()
@@ -842,6 +811,14 @@ class Analysis:
 
     def insert_formular(self):
         """수식을 동적으로 생성하여 삽입합니다."""
+        self._insert_flow_formulas()
+        self._insert_pl_formulas()
+        self._insert_ratio_formulas()
+        self._insert_unadjusted_formulas()
+        self._insert_reference_formulas()
+
+    def _insert_flow_formulas(self):
+        """자산 Flow 탭 수식 삽입 (기초/기말 평균 및 가중평균)."""
         asset_list = [
             "Debtors\nth USD ",
             "Creditors\nth USD ",
@@ -850,41 +827,45 @@ class Analysis:
             "Tangible fixed assets\nth USD ",
             "Total assets\nth USD "
         ]
-        
+        # WA3 탭에 복사할 자산 → wa3 컬럼 오프셋 매핑
+        wa3_offset = {"Stock": 3, "Intangible": 5, "Tangible": 6, "Total": 7}
+
         col_name = {}
         for asset in asset_list:
-            for year in range(self.start_year-1, self.end_year+1):
-                col_name[asset+str(year)] = self.raw_col_alphabet[asset+str(year)]
-        
+            for year in range(self.start_year - 1, self.end_year + 1):
+                col_name[asset + str(year)] = self.raw_col_alphabet[asset + str(year)]
+
         num_flow_cols = self.num_years + 1
-        
-        for asset in asset_list:
-            asset_idx = asset_list.index(asset)
-            
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
+
+        for asset_idx, asset in enumerate(asset_list):
             for year_idx in range(self.num_years):
                 col = self.flow_start_col + asset_idx * num_flow_cols + year_idx
-                for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                    cell = self.ws.cell(row=row, column=col)
-                    prev_year = self.start_year - 1 + year_idx
-                    curr_year = self.start_year + year_idx
-                    cell.value = f"=IFERROR(SUM({col_name[asset+str(prev_year)]}{row}:{col_name[asset+str(curr_year)]}{row})/2,0)"
-            
+                prev_year = self.start_year - 1 + year_idx
+                curr_year = self.start_year + year_idx
+                for row in data_rows:
+                    self.ws.cell(row=row, column=col).value = (
+                        f"=IFERROR(SUM({col_name[asset+str(prev_year)]}{row}:"
+                        f"{col_name[asset+str(curr_year)]}{row})/2,0)"
+                    )
+
             wa_col = self.flow_start_col + asset_idx * num_flow_cols + self.num_years
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=wa_col)
-                start_col_letter = get_column_letter(wa_col - self.num_years)
-                end_col_letter = get_column_letter(wa_col - 1)
-                cell.value = f"=IFERROR(SUM({start_col_letter}{row}:{end_col_letter}{row})/{self.num_years},0)"
-                
-                if "Stock" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+3).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Intangible" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+5).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Tangible" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+6).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-                elif "Total" in asset:
-                    self.ws.cell(row=row, column=self.wa3_start_col+7).value = f"=IFERROR({get_column_letter(wa_col)}{row},0)"
-        
+            start_wa = get_column_letter(wa_col - self.num_years)
+            end_wa = get_column_letter(wa_col - 1)
+            for row in data_rows:
+                self.ws.cell(row=row, column=wa_col).value = (
+                    f"=IFERROR(SUM({start_wa}{row}:{end_wa}{row})/{self.num_years},0)"
+                )
+                wa_col_letter = get_column_letter(wa_col)
+                for keyword, offset in wa3_offset.items():
+                    if keyword in asset:
+                        self.ws.cell(row=row, column=self.wa3_start_col + offset).value = (
+                            f"=IFERROR({wa_col_letter}{row},0)"
+                        )
+                        break
+
+    def _insert_pl_formulas(self):
+        """P&L 항목 WA3(기간 평균) 수식 삽입."""
         pl_list = {
             f"Operating revenue (Turnover)\nth USD {self.start_year}": 0,
             f"Operating profit (loss) [EBIT]\nth USD {self.start_year}": 1,
@@ -893,130 +874,131 @@ class Analysis:
             f"Costs of goods sold\nth USD {self.start_year}": 8,
             f"Number of employees\n{self.start_year}": 9,
         }
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
 
         for pl, col_idx in pl_list.items():
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=self.wa3_start_col + col_idx)
-                start_col = self.raw_col_number[pl]
-                end_col = start_col + self.num_years - 1
-                cell.value = f"=IFERROR(SUM({get_column_letter(start_col)}{row}:{get_column_letter(end_col)}{row})/{self.num_years},0)"
-        
-        ratio_idx = {1:(4,0), 2:(2,0), 3:(5,7), 4:(6,7), 5:(3,7), 6:(3,8)}
+            start_col = self.raw_col_number[pl]
+            end_col = start_col + self.num_years - 1
+            for row in data_rows:
+                self.ws.cell(row=row, column=self.wa3_start_col + col_idx).value = (
+                    f"=IFERROR(SUM({get_column_letter(start_col)}{row}:"
+                    f"{get_column_letter(end_col)}{row})/{self.num_years},0)"
+                )
+
+    def _insert_ratio_formulas(self):
+        """WA3 비율 수식 삽입 (연구개발비율, 영업비용율 등)."""
+        # (numerator_offset, denominator_offset) — wa3_start_col 기준
+        ratio_idx = {1: (4, 0), 2: (2, 0), 3: (5, 7), 4: (6, 7), 5: (3, 7), 6: (3, 8)}
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
 
         for col_idx, (numerator, denominator) in ratio_idx.items():
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+            num_col = get_column_letter(self.wa3_start_col + numerator)
+            den_col = get_column_letter(self.wa3_start_col + denominator)
+            for row in data_rows:
                 cell = self.ws.cell(row=row, column=self.wa3_start_col + 9 + col_idx)
                 if col_idx == 6:
-                    cell.value = f'=IFERROR(365/({get_column_letter(self.wa3_start_col+denominator)}{row}/{get_column_letter(self.wa3_start_col+numerator)}{row}), "")'
+                    cell.value = f'=IFERROR(365/({den_col}{row}/{num_col}{row}), "")'
                 else:
-                    cell.value = f"=IFERROR({get_column_letter(self.wa3_start_col+numerator)}{row}/{get_column_letter(self.wa3_start_col+denominator)}{row},0)"
+                    cell.value = f"=IFERROR({num_col}{row}/{den_col}{row},0)"
 
+    def _insert_unadjusted_formulas(self):
+        """Unadjusted 지표(OM / MTC / BR) 수식 삽입."""
         num_cols_per_metric = len(self._get_unadj_list())
-        
-        for year_idx in range(self.num_years):
-            col = self.unadjusted_start_col + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
+
+        def _insert_metric(metric_start, yearly_formula_fn, avg_formula_fn):
+            """연도별 수식 + 평균 수식 + MaxMin 수식을 한 번에 삽입."""
+            for year_idx in range(self.num_years):
+                col = metric_start + year_idx
                 year = self.start_year + year_idx
-                op_col = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {year}"]
-                rev_col = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {year}"]
-                cell.value = f"=IFERROR({op_col}{row}/{rev_col}{row},0)"
-        
-        avg_col = self.unadjusted_start_col + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            op_start = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
-            op_end = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
-            rev_start = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
-            rev_end = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({op_start}{row}:{op_end}{row})/SUM({rev_start}{row}:{rev_end}{row}),0)"
-        
-        maxmin_col = self.unadjusted_start_col + self.num_years + 1
-        
-        # 1. BvD ID number & Company name reference
-        # Raw Data의 BvD ID, Name 컬럼 인덱스 (raw_data_start_col, raw_data_start_col+1)
+                for row in data_rows:
+                    self.ws.cell(row=row, column=col).value = yearly_formula_fn(row, year)
+
+            avg_col = metric_start + self.num_years
+            for row in data_rows:
+                self.ws.cell(row=row, column=avg_col).value = avg_formula_fn(row)
+
+            maxmin_col = metric_start + self.num_years + 1
+            start_l = get_column_letter(metric_start)
+            end_l = get_column_letter(metric_start + self.num_years - 1)
+            for row in data_rows:
+                self.ws.cell(row=row, column=maxmin_col).value = (
+                    f"=IFERROR(MAX({start_l}{row}:{end_l}{row})-MIN({start_l}{row}:{end_l}{row}),0)"
+                )
+
+        # OM
+        om_start = self.unadjusted_start_col
+        op_start_l = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
+        op_end_l = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
+        rev_start_l = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
+        rev_end_l = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
+
+        _insert_metric(
+            om_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}"
+                f"/{self.raw_col_alphabet[f'Operating revenue (Turnover)\\nth USD {year}']}{row},0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({op_start_l}{row}:{op_end_l}{row})"
+                f"/SUM({rev_start_l}{row}:{rev_end_l}{row}),0)"
+            ),
+        )
+
+        # MTC
+        mtc_start = self.unadjusted_start_col + num_cols_per_metric
+        _insert_metric(
+            mtc_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}"
+                f"/({self.raw_col_alphabet[f'Operating revenue (Turnover)\\nth USD {year}']}{row}"
+                f"-{self.raw_col_alphabet[f'Operating profit (loss) [EBIT]\\nth USD {year}']}{row}),0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({op_start_l}{row}:{op_end_l}{row})"
+                f"/(SUM({rev_start_l}{row}:{rev_end_l}{row})"
+                f"-SUM({op_start_l}{row}:{op_end_l}{row})),0)"
+            ),
+        )
+
+        # BR
+        br_start = self.unadjusted_start_col + num_cols_per_metric * 2
+        gp_start_l = self.raw_col_alphabet[f"Gross profit\nth USD {self.start_year}"]
+        gp_end_l = self.raw_col_alphabet[f"Gross profit\nth USD {self.end_year}"]
+        opex_start_l = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.start_year}"]
+        opex_end_l = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.end_year}"]
+
+        _insert_metric(
+            br_start,
+            yearly_formula_fn=lambda row, year: (
+                f"=IFERROR({self.raw_col_alphabet[f'Gross profit\\nth USD {year}']}{row}"
+                f"/{self.raw_col_alphabet[f'Other operating expense (income)\\nth USD {year}']}{row},0)"
+            ),
+            avg_formula_fn=lambda row: (
+                f"=IFERROR(SUM({gp_start_l}{row}:{gp_end_l}{row})"
+                f"/SUM({opex_start_l}{row}:{opex_end_l}{row}),0)"
+            ),
+        )
+
+    def _insert_reference_formulas(self):
+        """BvD ID / 회사명 / 질적기준 참조 수식 삽입."""
+        data_rows = range(self.qualitative_start_row + 3, self.ws.max_row + 1)
         raw_bvd_col = get_column_letter(self.raw_data_start_col)
         raw_name_col = get_column_letter(self.raw_data_start_col + 1)
-        
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            # BvD ID (Col 2)
+
+        for row in data_rows:
             self.ws.cell(row=row, column=2).value = f"={raw_bvd_col}{row}"
-            # Company Name (Col 3)
             self.ws.cell(row=row, column=3).value = f"={raw_name_col}{row}"
 
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(self.unadjusted_start_col)
-            end_letter = get_column_letter(self.unadjusted_start_col + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-        
-        mtc_start = self.unadjusted_start_col + num_cols_per_metric
-        for year_idx in range(self.num_years):
-            col = mtc_start + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
-                year = self.start_year + year_idx
-                op_col = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {year}"]
-                rev_col = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {year}"]
-                cell.value = f"=IFERROR({op_col}{row}/({rev_col}{row}-{op_col}{row}),0)"
-        
-        avg_col = mtc_start + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            op_start = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.start_year}"]
-            op_end = self.raw_col_alphabet[f"Operating profit (loss) [EBIT]\nth USD {self.end_year}"]
-            rev_start = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.start_year}"]
-            rev_end = self.raw_col_alphabet[f"Operating revenue (Turnover)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({op_start}{row}:{op_end}{row})/(SUM({rev_start}{row}:{rev_end}{row})-SUM({op_start}{row}:{op_end}{row})),0)"
-        
-        maxmin_col = mtc_start + self.num_years + 1
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(mtc_start)
-            end_letter = get_column_letter(mtc_start + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-        
-        br_start = self.unadjusted_start_col + num_cols_per_metric * 2
-        for year_idx in range(self.num_years):
-            col = br_start + year_idx
-            for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-                cell = self.ws.cell(row=row, column=col)
-                year = self.start_year + year_idx
-                gp_col = self.raw_col_alphabet[f"Gross profit\nth USD {year}"]
-                opex_col = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {year}"]
-                cell.value = f"=IFERROR({gp_col}{row}/{opex_col}{row},0)"
-        
-        avg_col = br_start + self.num_years
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=avg_col)
-            gp_start = self.raw_col_alphabet[f"Gross profit\nth USD {self.start_year}"]
-            gp_end = self.raw_col_alphabet[f"Gross profit\nth USD {self.end_year}"]
-            opex_start = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.start_year}"]
-            opex_end = self.raw_col_alphabet[f"Other operating expense (income)\nth USD {self.end_year}"]
-            cell.value = f"=IFERROR(SUM({gp_start}{row}:{gp_end}{row})/SUM({opex_start}{row}:{opex_end}{row}),0)"
-        
-        maxmin_col = br_start + self.num_years + 1
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
-            cell = self.ws.cell(row=row, column=maxmin_col)
-            start_letter = get_column_letter(br_start)
-            end_letter = get_column_letter(br_start + self.num_years - 1)
-            cell.value = f"=IFERROR(MAX({start_letter}{row}:{end_letter}{row})-MIN({start_letter}{row}:{end_letter}{row}),0)"
-
-        # --- Qualitative Reference Formulas ---
         qual_start = self.qualitative_start_col
-        # Column 1: DB Description -> Primary business line
         pbl_col = self.raw_col_alphabet["Primary business line"]
-        # Column 2: Full Overview -> Full overview
         fo_col = self.raw_col_alphabet["Full overview"]
-        # Column 3: Main activity -> Main activity
         ma_col = self.raw_col_alphabet["Main activity"]
-        # Column 4: Main Products and Services -> Main products and services
         mps_col = self.raw_col_alphabet["Main products and services"]
-        # Column 5: US-SIC -> US SIC code & " - " & US SIC description
         sic_col = self.raw_col_alphabet["US SIC, primary code(s)"]
         sic_desc_col = self.raw_col_alphabet["US SIC, primary code(s) - description"]
 
-        for row in range(self.qualitative_start_row + 3, self.ws.max_row + 1):
+        for row in data_rows:
             self.ws.cell(row=row, column=qual_start).value = f"={pbl_col}{row}"
             self.ws.cell(row=row, column=qual_start + 1).value = f"={fo_col}{row}"
             self.ws.cell(row=row, column=qual_start + 2).value = f"={ma_col}{row}"
@@ -1036,11 +1018,10 @@ class Analysis:
         
         # 2. 수식 입력
         data_start_row = self.qualitative_start_row + 3
-        # 데이터가 없을 경우를 대비해 max_row 체크
         if self.ws.max_row < data_start_row:
-             data_end_row = data_start_row + 10 # 임의의 범위
+            data_end_row = data_start_row  # 데이터 없음 — 수식 범위 최소화
         else:
-             data_end_row = self.ws.max_row
+            data_end_row = self.ws.max_row
 
         start_col = self.quantitative_start_col
         
@@ -1094,11 +1075,11 @@ class Analysis:
           }
         """
         if not criteria_configs:
-            print("Warning: 양적기준 설정이 비어있습니다.")
+            logger.warning("양적기준 설정이 비어있습니다.")
             return
-        
+
         if len(criteria_configs) > self.number_of_criteria:
-            print(f"Warning: 설정된 기준({len(criteria_configs)})이 number_of_criteria({self.number_of_criteria})보다 많습니다.")
+            logger.warning("설정된 기준(%d)이 number_of_criteria(%d)보다 많습니다.", len(criteria_configs), self.number_of_criteria)
             criteria_configs = criteria_configs[:self.number_of_criteria]
         
         # 데이터 시작 행 (헤더 3줄 아래)
@@ -1106,16 +1087,14 @@ class Analysis:
         
         # Raw 데이터가 있는 경우에만 수식 적용
         if self.ws.max_row < data_start_row:
-            print("Warning: Raw 데이터가 없습니다. 먼저 _populate_raw_data_from_excel()을 실행하세요.")
+            logger.warning("Raw 데이터가 없습니다. 먼저 _populate_raw_data_from_excel()을 실행하세요.")
             return
         
-        # 각 기준에 대해 수식 생성 및 적용
         # 각 기준에 대해 수식 생성 및 적용
         for criteria_idx, config in enumerate(criteria_configs):
             if config is None:
                 continue
 
-            criteria_col = self.quantitative_start_col + criteria_idx
             criteria_col = self.quantitative_start_col + criteria_idx
             
             # 각 데이터 행에 수식 적용
@@ -1127,7 +1106,7 @@ class Analysis:
         # 양적통과 컬럼 (모든 기준을 통과한 경우만 Yes)
         self._apply_quantitative_pass_formula(data_start_row)
         
-        print(f"양적기준 수식 적용 완료: {len(criteria_configs)}개 기준, {self.ws.max_row - data_start_row + 1}개 행")
+        logger.info("양적기준 수식 적용 완료: %d개 기준, %d개 행", len(criteria_configs), self.ws.max_row - data_start_row + 1)
     
     def _generate_formula_from_config(self, config, row_number, criteria_index):
         """설정 딕셔너리로부터 수식을 생성합니다."""
@@ -1206,158 +1185,92 @@ class Analysis:
             cell.value = formula
 
     def apply_final_styles(self):
-        """
-        최종적으로 서식을 적용합니다.
-        1. Unadjusted, WA3(Ratio): 0.00%
-        2. WA3(Metrics), Raw Data(Turnover~), Flow: Accounting Format
-        3. All Borders
-        """
+        """최종 서식을 적용합니다."""
         ACCOUNTING_FORMAT = '_(* #,##0_);_(* (#,##0);_(* "-"??_);_(@_)'
         PERCENTAGE_FORMAT = '0.00%'
-        
-        # 데이터 영역 (헤더 제외)
+
+        flow_total_cols = 6 * (self.num_years + 1)  # 6개 자산 × (연도 + WA열)
+        final_max_col = max(self.max_formatted_col, self.flow_start_col + flow_total_cols - 1)
+
         data_start_row = self.qualitative_start_row + 3
         max_row = self.ws.max_row
-        max_col = self.max_formatted_col
-        
-        # 1. Unadjusted (Percentage)
+
+        self._apply_number_formats(data_start_row, max_row, ACCOUNTING_FORMAT, PERCENTAGE_FORMAT, flow_total_cols)
+        self._apply_borders(max_row, final_max_col)
+        self._apply_header_alignment(final_max_col)
+        self._apply_column_widths(data_start_row, max_row, final_max_col)
+
+    def _apply_number_formats(self, data_start_row, max_row, accounting_fmt, percentage_fmt, flow_total_cols):
+        """숫자 포맷 적용 (Unadjusted %, WA3 Accounting/%, Raw Accounting, Flow Accounting)."""
+        # 1. Unadjusted → 퍼센트
         for col in range(self.unadjusted_start_col, self.unadjusted_start_col + self.unadjusted_num_cols):
             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = PERCENTAGE_FORMAT
-                
-        # 2. WA3 Metrics (Accounting)
-        # 종업원수 포함하려면 wa3_list 전체 적용
+                self.ws.cell(row=row, column=col).number_format = percentage_fmt
+
+        # 2. WA3 지표 → Accounting
         wa3_metrics_count = len(self._get_wa3_list())
         for col in range(self.wa3_start_col, self.wa3_start_col + wa3_metrics_count):
             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+                self.ws.cell(row=row, column=col).number_format = accounting_fmt
 
-        # 3. WA3 Ratios (Percentage)
-        wa3_ratios_count = len(self._get_ratio_tab_list())
+        # 3. WA3 비율 → 퍼센트 (재고자산보유일수는 Accounting)
         ratio_start_col = self.wa3_start_col + wa3_metrics_count
-        ratio_list = self._get_ratio_tab_list()
-        
-        for idx, ratio_name in enumerate(ratio_list):
+        for idx, ratio_name in enumerate(self._get_ratio_tab_list()):
+            fmt = accounting_fmt if "재고자산보유일수" in ratio_name else percentage_fmt
             col = ratio_start_col + idx
-            # "재고자산보유일수"가 포함된 경우 Accounting Format 적용
-            if "재고자산보유일수" in ratio_name:
-                fmt = ACCOUNTING_FORMAT
-            else:
-                fmt = PERCENTAGE_FORMAT
-                
             for row in range(data_start_row, max_row + 1):
                 self.ws.cell(row=row, column=col).number_format = fmt
-                
-        # 4. Raw Data (Accounting from Turnover)
-        # Turnover 컬럼 인덱스 찾기
-        turnover_col_name = f"Operating revenue (Turnover)\nth USD "
-        # ordered_columns에서 Turnover의 인덱스 확인
+
+        # 4. Raw Data (Turnover 이후) → Accounting
         try:
-            # Turnover가 포함된 첫 컬럼 인덱스를 찾음 (년도별 컬럼 중 첫번째)
-            # 여기서는 ordered_columns에 'Operating revenue (Turnover)\nth USD 2021' 처럼 년도가 붙어있으므로
-            # 기본 prefix로 검색
-            
-            # Turnover가 시작되는 첫 컬럼 찾기
-            turnover_start_index = -1
-            for idx, col_name in enumerate(self.ordered_columns):
-                if "Operating revenue (Turnover)" in col_name:
-                    turnover_start_index = idx
-                    break
-            
-            if turnover_start_index != -1:
+            turnover_start_index = next(
+                (i for i, name in enumerate(self.ordered_columns) if "Operating revenue (Turnover)" in name),
+                None
+            )
+            if turnover_start_index is not None:
                 abs_turnover_col = self.raw_data_start_col + turnover_start_index
-                # Raw Data 끝까지 적용
                 raw_data_end_col = self.raw_data_start_col + len(self.ordered_columns)
-                
                 for col in range(abs_turnover_col, raw_data_end_col):
                     for row in range(data_start_row, max_row + 1):
-                        self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
+                        self.ws.cell(row=row, column=col).number_format = accounting_fmt
         except Exception as e:
-            print(f"Warning: Raw Data 서식 적용 중 오류 발생: {e}")
+            logger.warning("Raw Data 서식 적용 중 오류 발생: %s", e)
 
-        # 5. Flow (Accounting)
-        # Flow 시작부터 max_formatted_col까지 (Flow가 마지막 부분이라 가정)
-        # 정확히는 flow_start_col 부터 flow 끝까지
-        flow_list = ["매출채권 (Flow)", "매입채무 (Flow)", "재고자산 (Flow)", "무형자산 (Flow)", "유형자산 (Flow)", "총자산 (Flow)"]
-        num_flow_cols = self.num_years + 1
-        total_flow_cols = len(flow_list) * num_flow_cols
-        
-        for col in range(self.flow_start_col, self.flow_start_col + total_flow_cols):
-             for row in range(data_start_row, max_row + 1):
-                self.ws.cell(row=row, column=col).number_format = ACCOUNTING_FORMAT
-        
-        # 6. All Borders
-        # 전체 테이블 범위: qualitative_start_row 부터 max_row, 1부터 max_col
-        # max_formatted_col이 정확하지 않을 수 있으므로 max_col 재계산
-        final_max_col = max(self.max_formatted_col, self.flow_start_col + total_flow_cols - 1)
-        
+        # 5. Flow → Accounting
+        for col in range(self.flow_start_col, self.flow_start_col + flow_total_cols):
+            for row in range(data_start_row, max_row + 1):
+                self.ws.cell(row=row, column=col).number_format = accounting_fmt
+
+    def _apply_borders(self, max_row, final_max_col):
+        """전체 테이블에 테두리 적용 (Final Selection ~ Unadjusted 사이 빈 열 제외)."""
         for row in range(self.qualitative_start_row, max_row + 1):
             for col in range(1, final_max_col + 1):
-                # Skip and clear borders for empty columns between Final Selection and Unadjusted
                 if self.final_selection_start_col < col < self.unadjusted_start_col:
                     self.ws.cell(row=row, column=col).border = Border()
-                    continue
-                    
-                cell = self.ws.cell(row=row, column=col)
-                cell.border = THIN_BORDER
-        
-        # 7. Wrap Text (Row 26, 27, 28 approx -> quantitative_start_row ~ +2)
-        # qualitative_start_row가 헤더 시작점임
+                else:
+                    self.ws.cell(row=row, column=col).border = THIN_BORDER
+
+    def _apply_header_alignment(self, final_max_col):
+        """헤더 3행에 중앙 정렬 + 줄바꿈 적용."""
         header_start_row = self.qualitative_start_row
         for r in range(header_start_row, header_start_row + 3):
             for c in range(1, final_max_col + 1):
-                self.ws.cell(row=r, column=c).alignment = Alignment(wrap_text=True, horizontal='center', vertical='center')
+                self.ws.cell(row=r, column=c).alignment = Alignment(
+                    wrap_text=True, horizontal='center', vertical='center'
+                )
 
-        # 8. Autofit (Unadjusted ~ End)
-        # self.unadjusted_start_col 부터 final_max_col까지
+    def _apply_column_widths(self, data_start_row, max_row, final_max_col):
+        """헤더 텍스트 길이 기준으로 컬럼 너비 설정 (Unadjusted 이후)."""
+        header_start_row = self.qualitative_start_row
         for col_idx in range(self.unadjusted_start_col, final_max_col + 1):
-            col_letter = get_column_letter(col_idx)
             max_len = 0
-            
-            # 헤더 확인
             for r in range(header_start_row, header_start_row + 3):
                 val = self.ws.cell(row=r, column=col_idx).value
                 if val:
-                    # 줄바꿈이 있으면 가장 긴 줄 기준
-                    lines = str(val).split('\n')
-                    for line in lines:
-                        max_len = max(max_len, len(str(line)))
-            
-            # 데이터 확인 (너무 많으면 샘플링 or 전체)
-            # 여기선 전체 확인하되 50글자 제한
-            # 엑셀 폭 계산은 대략 글자수 * 1.2 정도?
-            # 숫자는 길이가 짧아도 너비가 필요할 수 있음
-             
-            # 이번 요청에서는 "컬럼너비를 Autofit"이라고 했으므로
-            # openpyxl로 best effort 추정
-            
-            # 데이터는 제외하고 헤더 기준으로만 하거나, 데이터도 일부 포함
-            # Accounting format 등은 길이가 길어질 수 있음
-            # 간단히 헤더 길이 + 여유분 or 데이터 길이 고려
-            
-            # (데이터 전체 순회는 느릴 수 있으니 상위 100개만 체크)
-            check_limit = min(max_row, data_start_row + 100)
-            for r in range(data_start_row, check_limit):
-                val = self.ws.cell(row=r, column=col_idx).value
-                if val is not None:
-                    # 수식이면 결과값을 알기 어려우므로 pass하거나 추정
-                    # 여기서는 그냥 pass (값 읽기가 어려움)
-                    pass
+                    max_len = max(max_len, max(len(line) for line in str(val).split('\n')))
 
-            # 단순히 max_len (헤더 기준) + 여유분 2
-            # 하지만 Wrapping이 되어있으므로 너비를 너무 넓히면 Wrapping의 의미가 퇴색됨
-            # 보통 Wrapping을 하면 너비를 고정하고 높이를 늘리지만,
-            # 여기서는 "Autofit"을 요청했으므로, 텍스트가 안 잘리게 너비를 늘려달라는 의미일 수 있음.
-            # 하지만 Wrap text + Autofit은 상충됨 (Autofit하면 한 줄이 됨).
-            # "Wrap text 옵션 적용 후 ... Autofit" -> Wrap을 유지하면서 적절한 너비?
-            # 아마도 '적당한 너비'를 원할 것 같음. 
-            # 일단 헤더의 max line length + 4 정도로 설정
-            
-            format_width = max_len + 4
-            if format_width < 10: format_width = 10
-            if format_width > 50: format_width = 50 # 너무 넓지 않게
-            
-            self.ws.column_dimensions[col_letter].width = format_width
+            width = max(10, min(50, max_len + 4))
+            self.ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     def save_file(self):
         # Naming Rule: [Company]_QuantitativeAnalysis_[Period].xlsx
@@ -1373,7 +1286,8 @@ class Analysis:
         if self.output_path:
             target_dir = self.output_path
         else:
-            target_dir = os.getcwd() # Should generally not happen given UI logic
+            target_dir = os.getcwd()
+            logger.warning("output_path가 설정되지 않아 현재 디렉토리에 저장합니다: %s", target_dir)
             
         filepath = os.path.join(target_dir, base_filename)
         
@@ -1391,351 +1305,332 @@ class Analysis:
                 
         try:
             self.wb.save(filepath)
-            print(f"파일 저장 완료: {filepath}")
-            
+            logger.info("파일 저장 완료: %s", filepath)
+
         except PermissionError:
-            print(f"Error: 파일 저장 실패 (권한 거부). '{filepath}' 파일이 열려있는지 확인하세요.")
-            raise PermissionError(f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요.")
-            
+            logger.error("파일 저장 실패 (권한 거부): '%s'", filepath)
+            raise PermissionError(
+                f"파일 저장 실패: '{os.path.basename(filepath)}' 파일이 열려있거나 권한이 없습니다.\n"
+                "파일을 닫고 다시 시도하거나, 다른 이름으로 저장될 때까지 기다리세요."
+            )
+
         except Exception as e:
-            print(f"파일 저장 실패: {e}")
-            raise e
+            logger.error("파일 저장 실패: %s", e)
+            raise
+
+        finally:
+            self.wb.close()
 
 
 
-import pandas as pd
-from openpyxl.utils import get_column_letter
 class SimpleUserInputConverter:
-   """
-   단순화된 사용자 입력 변환 클래스
-   Account만 받아서 자동으로 Type과 계산구분 결정
-   """
-   # Account별 자동 설정
-   ACCOUNT_CONFIG = {
-       # 텍스트 타입
-       "감사의견": {
-           'type': 'text',
-           'field_name': 'Audit status\n',
-           'condition_type': 'all_equals',
-           'default_value': 'Unqualified',
-           'default_include': True
-       },
-       "상장여부": {
-           'type': 'text',
-           'field_name': 'Listing status',
-           'condition_type': 'equals',
-           'default_value': 'Listed',
-           'default_include': True
-       },
-       # 가용성
-       "재무정보가용성": {
-           'type': 'data_availability',
-           'field_names': [
-               "Operating revenue (Turnover)\nth USD ",
-               "Gross profit\nth USD ",
-               "Operating profit (loss) [EBIT]\nth USD "
-           ],
-           'default_include': True
-       },
-       # 평균값 (WA3) - 금액
-       "매출액(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': True
-       },
-       "영업이익(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '영업이익',
-           'condition_type': 'lt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "영업비용(금액, 평균)": {  # 영업비용
-           'type': 'wa3',
-           'field_name': '영업비용',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '재고자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "연구개발비(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '연구개발비',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "무형자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '무형자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "유형자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '유형자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "총자산(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "매출원가(금액, 평균)": {
-           'type': 'wa3',
-           'field_name': '매출원가',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 개별값 - 금액 (1개년이라도)
-       "영업이익(금액, 1개년이라도)": {
-           'type': 'numeric',
-           'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
-           'condition_type': 'lt',
-           'count_requirement': 'any',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 개별값 - 금액 (3년연속 = 모든 연도)
-       "영업이익(금액, 연속)": {
-           'type': 'numeric',
-           'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
-           'condition_type': 'lt',
-           'count_requirement': 'all',
-           'default_value': 0,
-           'default_include': False
-       },
-       # 비율 (평균)
-       "연구개발비/매출액(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '연구개발비/매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "영업비용/매출액(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '영업비용/매출액',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "무형자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '무형자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "유형자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '유형자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산/총자산(비율, 평균)": {
-           'type': 'ratio',
-           'field_name': '재고자산/총자산',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       },
-       "재고자산보유일수(365/재고자산회전율)(평균)": {
-           'type': 'ratio',
-           'field_name': '재고자산보유일수',
-           'condition_type': 'gt',
-           'default_value': 0,
-           'default_include': False
-       }
-   }
-   # X비교 매핑
-   COMPARISON_MAPPING = {
-       "초과": "gt",
-       "이상": "gte",
-       "미만": "lt",
-       "이하": "lte",
-       "같음": "eq",
-       "공란": "blank",
-       "공란아님": "not_blank",
-       "텍스트 일치": "equals",
-       "텍스트 포함": "contains",
-       "All equals": "all_equals"
-   }
-   # 포함/제외 매핑
-   INCLUDE_MAPPING = {
-       "포함": True,
-       "제외": False
-   }
-   def __init__(self, start_year, end_year):
-       """
-       Parameters:
-       - start_year: 분석 시작 연도
-       - end_year: 분석 종료 연도
-       """
-       self.start_year = start_year
-       self.end_year = end_year
-       self.num_years = end_year - start_year + 1
-   def convert_simple_input(self, user_criteria):
-       """
-       단순화된 사용자 입력을 프로그램 config로 변환
-       Parameters:
-       - user_criteria: 딕셔너리 또는 리스트
-         {
-             'account': 'Account 이름',
-             'xValue': 숫자 또는 텍스트 (선택),
-             'xCompare': '초과' | '이상' | ... (선택),
-             'include': '포함' | '제외' (선택)
-         }
-       Returns:
-       - config 딕셔너리 리스트
-       """
-       if isinstance(user_criteria, list):
-           return [self._convert_single_simple_criteria(c) for c in user_criteria]
-       else:
-           return self._convert_single_simple_criteria(user_criteria)
-       
-   def _convert_single_simple_criteria(self, user_input):
-       """단일 기준 변환 (단순화)"""
-       # NaN 값 처리
-       def safe_str(value, default=''):
-           if pd.isna(value):
-               return default
-           return str(value).strip()
-       def safe_value(value, default=None):
-           if pd.isna(value):
-               return default
-           return value
-       # 사용자 입력 파싱
-       account = safe_str(user_input.get('account', ''))
-       user_x_value = safe_value(user_input.get('xValue'))
-       user_x_compare = safe_str(user_input.get('xCompare', ''))
-       user_include = safe_str(user_input.get('include', ''))
-       # Account 설정 가져오기
-       if account not in self.ACCOUNT_CONFIG:
-           print(f"Warning: 알 수 없는 Account '{account}'. 건너뜁니다.")
-           return None
-       account_config = self.ACCOUNT_CONFIG[account].copy()
-       # xValue 오버라이드 (사용자가 입력한 경우)
-       if user_x_value is not None:
-           account_config['value'] = user_x_value
-       else:
-           account_config['value'] = account_config.get('default_value', 0)
-       # xCompare 오버라이드 (사용자가 입력한 경우)
-       if user_x_compare:
-           mapped_compare = self.COMPARISON_MAPPING.get(user_x_compare)
-           if mapped_compare:
-               account_config['condition_type'] = mapped_compare
-       # include 오버라이드 (사용자가 입력한 경우)
-       if user_include:
-           mapped_include = self.INCLUDE_MAPPING.get(user_include)
-           if mapped_include is not None:
-               account_config['include'] = mapped_include
-       else:
-           account_config['include'] = account_config.get('default_include', True)
-       # 불필요한 default_ 키 제거
-       account_config.pop('default_value', None)
-       account_config.pop('default_include', None)
-       return account_config
-   
+    """단순화된 사용자 입력 변환 클래스. Account명만 받아서 타입과 계산구분을 자동 결정."""
 
-   def load_criteria_from_excel(self, excel_path, sheet_name="컨트롤시트"):
-       """
-       엑셀 파일에서 단순화된 기준 정보를 읽어옴
-       Parameters:
-       - excel_path: 엑셀 파일 경로
-       - sheet_name: 시트 이름 (기본값: "컨트롤시트")
-       Returns:
-       - 변환된 criteria_configs 리스트
-       """
-       try:
-           df = pd.read_excel(excel_path, sheet_name=sheet_name)
-       except Exception as e:
-           print(f"Error: 컨트롤시트를 읽는 중 오류 발생: {e}")
-           return []
-       # 필요한 컬럼 확인
-       required_columns = ['account']
-       optional_columns = ['xValue', 'xCompare', 'include']
-       if 'account' not in df.columns:
-           print(f"Error: 컨트롤시트에 'account' 컬럼이 없습니다.")
-           return []
-       # account가 비어있는 행 제거
-       df = df.dropna(subset=['account'], how='all')
-       # 사용 가능한 컬럼만 선택
-       available_columns = [col for col in required_columns + optional_columns if col in df.columns]
-       # 각 행을 딕셔너리로 변환
-       user_criteria_list = df[available_columns].to_dict('records')
-       # 프로그램 config로 변환
-       converted_configs = []
-       for criteria in user_criteria_list:
-           config = self._convert_single_simple_criteria(criteria)
-           if config is not None:  # None이 아닌 것만 추가
-               converted_configs.append(config)
-       print(f"✓ 컨트롤시트에서 {len(converted_configs)}개 기준을 읽어왔습니다.")
-       return converted_configs
+    ACCOUNT_CONFIG = {
+        # 텍스트 타입
+        "감사의견": {
+            'type': 'text',
+            'field_name': 'Audit status\n',
+            'condition_type': 'all_equals',
+            'default_value': 'Unqualified',
+            'default_include': True
+        },
+        "상장여부": {
+            'type': 'text',
+            'field_name': 'Listing status',
+            'condition_type': 'equals',
+            'default_value': 'Listed',
+            'default_include': True
+        },
+        # 가용성
+        "재무정보가용성": {
+            'type': 'data_availability',
+            'field_names': [
+                "Operating revenue (Turnover)\nth USD ",
+                "Gross profit\nth USD ",
+                "Operating profit (loss) [EBIT]\nth USD "
+            ],
+            'default_include': True
+        },
+        # 평균값 (WA3) - 금액
+        "매출액(금액, 평균)": {
+            'type': 'wa3', 'field_name': '매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': True
+        },
+        "영업이익(금액, 평균)": {
+            'type': 'wa3', 'field_name': '영업이익',
+            'condition_type': 'lt', 'default_value': 0, 'default_include': False
+        },
+        "영업비용(금액, 평균)": {
+            'type': 'wa3', 'field_name': '영업비용',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '재고자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "연구개발비(금액, 평균)": {
+            'type': 'wa3', 'field_name': '연구개발비',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "무형자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '무형자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "유형자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '유형자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "총자산(금액, 평균)": {
+            'type': 'wa3', 'field_name': '총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "매출원가(금액, 평균)": {
+            'type': 'wa3', 'field_name': '매출원가',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        # 개별값 - 금액
+        "영업이익(금액, 1개년이라도)": {
+            'type': 'numeric',
+            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
+            'condition_type': 'lt', 'count_requirement': 'any',
+            'default_value': 0, 'default_include': False
+        },
+        "영업이익(금액, 연속)": {
+            'type': 'numeric',
+            'field_name': 'Operating profit (loss) [EBIT]\nth USD ',
+            'condition_type': 'lt', 'count_requirement': 'all',
+            'default_value': 0, 'default_include': False
+        },
+        # 비율 (평균)
+        "연구개발비/매출액(비율, 평균)": {
+            'type': 'ratio', 'field_name': '연구개발비/매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "영업비용/매출액(비율, 평균)": {
+            'type': 'ratio', 'field_name': '영업비용/매출액',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "무형자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '무형자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "유형자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '유형자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산/총자산(비율, 평균)": {
+            'type': 'ratio', 'field_name': '재고자산/총자산',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+        "재고자산보유일수(365/재고자산회전율)(평균)": {
+            'type': 'ratio', 'field_name': '재고자산보유일수',
+            'condition_type': 'gt', 'default_value': 0, 'default_include': False
+        },
+    }
+
+    COMPARISON_MAPPING = {
+        "초과": "gt", "이상": "gte", "미만": "lt", "이하": "lte", "같음": "eq",
+        "공란": "blank", "공란아님": "not_blank",
+        "텍스트 일치": "equals", "텍스트 포함": "contains", "All equals": "all_equals",
+    }
+
+    INCLUDE_MAPPING = {"포함": True, "제외": False}
+
+    def __init__(self, start_year, end_year):
+        self.start_year = start_year
+        self.end_year = end_year
+        self.num_years = end_year - start_year + 1
+
+    def convert_simple_input(self, user_criteria):
+        """단순화된 사용자 입력을 프로그램 config로 변환. 리스트 또는 단일 딕셔너리 모두 수용."""
+        if isinstance(user_criteria, list):
+            return [self._convert_single_simple_criteria(c) for c in user_criteria]
+        return self._convert_single_simple_criteria(user_criteria)
+
+    def _convert_single_simple_criteria(self, user_input):
+        """단일 기준 변환."""
+        def safe_str(value, default=''):
+            try:
+                if pd.isna(value):
+                    return default
+            except (TypeError, ValueError):
+                pass
+            return str(value).strip()
+
+        def safe_value(value, default=None):
+            try:
+                if pd.isna(value):
+                    return default
+            except (TypeError, ValueError):
+                pass
+            return value
+
+        account = safe_str(user_input.get('account', ''))
+        user_x_value = safe_value(user_input.get('xValue'))
+        user_x_compare = safe_str(user_input.get('xCompare', ''))
+        user_include = safe_str(user_input.get('include', ''))
+
+        if account not in self.ACCOUNT_CONFIG:
+            logger.warning("알 수 없는 Account '%s'. 건너뜁니다.", account)
+            return None
+
+        account_config = self.ACCOUNT_CONFIG[account].copy()
+
+        account_config['value'] = user_x_value if user_x_value is not None else account_config.get('default_value', 0)
+
+        if user_x_compare:
+            mapped_compare = self.COMPARISON_MAPPING.get(user_x_compare)
+            if mapped_compare:
+                account_config['condition_type'] = mapped_compare
+
+        if user_include:
+            mapped_include = self.INCLUDE_MAPPING.get(user_include)
+            if mapped_include is not None:
+                account_config['include'] = mapped_include
+        else:
+            account_config['include'] = account_config.get('default_include', True)
+
+        account_config.pop('default_value', None)
+        account_config.pop('default_include', None)
+        return account_config
+
+    def load_criteria_from_excel(self, excel_path, sheet_name="컨트롤시트"):
+        """엑셀 컨트롤시트에서 기준 정보를 읽어 config 리스트로 변환."""
+        try:
+            df = pd.read_excel(excel_path, sheet_name=sheet_name)
+        except Exception as e:
+            logger.error("컨트롤시트를 읽는 중 오류 발생: %s", e)
+            return []
+
+        if 'account' not in df.columns:
+            logger.error("컨트롤시트에 'account' 컬럼이 없습니다.")
+            return []
+
+        required_columns = ['account']
+        optional_columns = ['xValue', 'xCompare', 'include']
+        df = df.dropna(subset=['account'], how='all')
+        available_columns = [col for col in required_columns + optional_columns if col in df.columns]
+        user_criteria_list = df[available_columns].to_dict('records')
+
+        converted_configs = [
+            config for criteria in user_criteria_list
+            if (config := self._convert_single_simple_criteria(criteria)) is not None
+        ]
+        logger.info("컨트롤시트에서 %d개 기준을 읽어왔습니다.", len(converted_configs))
+        return converted_configs
+
+
+class DirectCriteriaConverter:
+    """UI 자유형식 입력을 CriteriaFormulaGenerator용 config dict로 직접 변환."""
+
+    def __init__(self, start_year: int, end_year: int):
+        self.start_year = start_year
+        self.end_year = end_year
+
+    def convert(self, criteria_list: list) -> list:
+        result = []
+        for row in criteria_list:
+            converted = self._convert_one(row)
+            if converted is not None:
+                result.append(converted)
+        return result
+
+    def _convert_one(self, row: dict) -> dict | None:
+        from criteria_config import (
+            CRITERIA_TYPES, NUMERIC_OPERATORS, TEXT_OPERATORS,
+            COUNT_REQUIREMENT_MAPPING,
+        )
+
+        type_key    = row.get("type", "").strip()
+        account_kor = row.get("account", "").strip()
+        x_value     = row.get("xValue", "").strip()
+        x_compare   = row.get("xCompare", "").strip()
+        year_cond   = row.get("yearCondition", "")
+        n_years_str = row.get("nYears", "")
+        include     = row.get("include", True)
+
+        if type_key not in CRITERIA_TYPES:
+            logger.warning("알 수 없는 유형: %s", type_key)
+            return None
+        accounts_map = CRITERIA_TYPES[type_key]["accounts"]
+        if account_kor not in accounts_map:
+            logger.warning("유형 '%s'에 계정 '%s' 없음", type_key, account_kor)
+            return None
+        field_val = accounts_map[account_kor]
+
+        # 데이터가용성
+        if type_key == "데이터가용성":
+            return {"type": "data_availability", "field_names": field_val, "include": include}
+
+        # 연산자 매핑
+        op_map = TEXT_OPERATORS if type_key == "텍스트" else NUMERIC_OPERATORS
+        condition_type = op_map.get(x_compare)
+        if not condition_type:
+            logger.warning("알 수 없는 연산자: %s", x_compare)
+            return None
+
+        # 기준값 파싱
+        if type_key == "텍스트":
+            parsed_value = x_value
+        else:
+            try:
+                parsed_value = float(x_value) if x_value else 0.0
+            except ValueError:
+                logger.warning("기준값 파싱 실패: %s", x_value)
+                return None
+
+        internal_type = {
+            "텍스트": "text",
+            "숫자-개별연도": "numeric",
+            "숫자-WA3평균": "wa3",
+            "비율": "ratio",
+        }[type_key]
+
+        config = {
+            "type": internal_type,
+            "field_name": field_val,
+            "condition_type": condition_type,
+            "value": parsed_value,
+            "include": include,
+        }
+
+        # count_requirement (개별연도만)
+        if type_key == "숫자-개별연도":
+            if year_cond == "N개년이상":
+                try:
+                    config["count_requirement"] = int(n_years_str)
+                except (ValueError, TypeError):
+                    logger.warning("N개년 값 파싱 실패: %s", n_years_str)
+                    return None
+            else:
+                config["count_requirement"] = COUNT_REQUIREMENT_MAPPING.get(year_cond, "all")
+
+        return config
 
 
 def main_processor(payload):
-    
-    input_data = payload["inputData"]
+    input_data    = payload["inputData"]
     criteria_list = payload["criteriaList"]
 
-    # input_data = {
-    #     "corpName": corp_name,
-    #     "targetCorp": target_corp,
-    #     "yearFrom": year_from,
-    #     "yearTo": year_to,
-    #     "rawFilePath": self.file_path
-    # }
-    #         criteria_list.append({
-    #     "seq": idx,
-    #     "account": account,
-    #     "xValue": x_value,
-    #     "xCompare": x_compare,
-    #     "include": include
-    # })
-    
-    converter = SimpleUserInputConverter(start_year=input_data["yearFrom"], end_year=input_data["yearTo"])
-    converted = converter.convert_simple_input(criteria_list)
+    converter = DirectCriteriaConverter(input_data["yearFrom"], input_data["yearTo"])
+    converted = converter.convert(criteria_list)
 
     processor = Analysis(
         tested_party=input_data["targetCorp"],
         name=input_data["corpName"],
         start_year=input_data["yearFrom"],
         end_year=input_data["yearTo"],
-        number_of_criteria=len(criteria_list),
+        number_of_criteria=len([c for c in converted if c is not None]),
         data_path=input_data["rawFilePath"],
         criteria_list=criteria_list,
-        output_path=input_data.get("outputDir")
+        output_path=input_data.get("outputDir"),
     )
 
-    # 포맷 생성
     processor.create_format()
-    # Raw 데이터 채우기 (파일이 있다면)
     processor._populate_raw_data_from_excel()
-    # 계산 수식 삽입
     processor.insert_formular()
-
     processor.apply_quantitative_criteria_formulas(converted)
-    
-    # 통과/탈락 요약 수식 (Row 20, 21)
     processor.insert_pass_fail_summary()
-
-    # 최종 서식 적용 (Accounting, %, Border)
     processor.apply_final_styles()
-
     processor.save_file()

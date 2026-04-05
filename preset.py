@@ -19,12 +19,14 @@ PRESET = {
     "영업이익(금액, 1개년이라도)": {
         "xValue": "0",
         "xCompare": "미만",
-        "include": "제외"
+        "include": "제외",
+        "yearCond": "1개년이라도"
     },
     "영업이익(금액, 연속)": {
         "xValue": "0",
         "xCompare": "미만",
-        "include": "제외"
+        "include": "제외",
+        "yearCond": "모든연도"
     },
     "재무정보가용성": {
         "xValue": "0",
